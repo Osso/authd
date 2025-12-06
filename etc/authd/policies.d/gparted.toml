@@ -1,0 +1,4 @@
+[[rules]]
+target = "/usr/lib/gparted/gpartedbin"
+allow_groups = ["wheel"]
+auth = "password"

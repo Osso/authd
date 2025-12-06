@@ -1,0 +1,19 @@
+[package]
+name = "authd"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+authd-protocol.workspace = true
+serde.workspace = true
+rmp-serde.workspace = true
+tokio.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+anyhow = "1"
+pam = "0.8"
+users = "0.11"
+toml = "0.8"

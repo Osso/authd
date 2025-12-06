@@ -1,0 +1,23 @@
+[workspace]
+resolver = "2"
+members = [
+    "authd",
+    "authctl", 
+    "protocol",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+authors = ["Alessio Deiana <adeiana@gmail.com>"]
+
+[workspace.dependencies]
+authd-protocol = { path = "protocol" }
+serde = { version = "1", features = ["derive"] }
+rmp-serde = "1"
+tokio = { version = "1", features = ["full"] }
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+toml = "0.8"

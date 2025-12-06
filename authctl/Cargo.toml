@@ -1,0 +1,23 @@
+[package]
+name = "authctl"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+authd-protocol.workspace = true
+serde.workspace = true
+rmp-serde.workspace = true
+tokio.workspace = true
+thiserror.workspace = true
+iced = { version = "0.13", features = ["tokio"] }
+iced_layershell = "0.13"
+
+[[bin]]
+name = "authctl"
+path = "src/main.rs"
+
+[[bin]]
+name = "pkexec"
+path = "src/pkexec_compat.rs"
