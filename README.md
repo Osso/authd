@@ -65,12 +65,14 @@ auth = "none"
 
 ### Auth Requirements
 
-| Value      | Behavior                                      |
-|------------|-----------------------------------------------|
-| `none`     | Run immediately, no interaction               |
-| `confirm`  | Show confirmation dialog (default)            |
-| `password` | Require password authentication               |
-| `deny`     | Always reject                                 |
+| Value      | GUI (authctl)                    | CLI (authsudo)                   |
+|------------|----------------------------------|----------------------------------|
+| `none`     | Run immediately                  | Run immediately                  |
+| `confirm`  | Show dialog (default)            | Run immediately (no TTY dialog)  |
+| `password` | Error: use authsudo              | Prompt for password via PAM      |
+| `deny`     | Reject                           | Reject                           |
+
+**Note:** Password authentication is only supported via `authsudo` in a terminal. The GUI flow intentionally doesn't support password entry.
 
 ### Matching Rules
 

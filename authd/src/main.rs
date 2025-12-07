@@ -8,14 +8,10 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixListener as TokioUnixListener;
 use tracing::{error, info};
 
-mod cache;
 mod pam;
-
-use cache::AuthCache;
 
 struct AppState {
     policy: PolicyEngine,
-    cache: AuthCache,
 }
 
 #[tokio::main]
@@ -28,10 +24,7 @@ async fn main() -> anyhow::Result<()> {
         error!("failed to load policies: {}", e);
     }
 
-    let state = Arc::new(AppState {
-        policy,
-        cache: AuthCache::new(),
-    });
+    let state = Arc::new(AppState { policy });
 
     // Remove stale socket
     let _ = fs::remove_file(SOCKET_PATH);
@@ -124,11 +117,10 @@ async fn process_request(caller: &CallerInfo, request: &AuthRequest, state: &App
             // User already confirmed by clicking Allow in authctl
         }
         PolicyDecision::RequireAuth => {
-            // Password was already validated by authctl before reaching here
-            // Cache this for future requests within timeout
-            if !state.cache.is_valid(caller.uid, &request.target) {
-                state.cache.insert(caller.uid, request.target.clone(), 300);
-            }
+            // Password auth not supported via GUI - use authsudo instead
+            return AuthResponse::Error {
+                message: "Password auth requires terminal. Use: authsudo".into(),
+            };
         }
     }
 
