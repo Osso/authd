@@ -179,7 +179,11 @@ impl PolicyEngine {
     }
 
     fn check(&self, target: &Path, uid: u32) -> PolicyDecision {
-        let Some(rule) = self.rules.get(target) else {
+        // Try exact match first, then wildcard
+        let rule = self.rules.get(target)
+            .or_else(|| self.rules.get(Path::new("*")));
+
+        let Some(rule) = rule else {
             return PolicyDecision::Unknown;
         };
 
