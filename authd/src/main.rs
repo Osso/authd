@@ -118,11 +118,14 @@ async fn process_request(caller: &CallerInfo, request: &AuthRequest, state: &App
         PolicyDecision::Denied(reason) => {
             return AuthResponse::Denied { reason };
         }
-        PolicyDecision::Allow => {
-            // No auth needed, proceed directly
+        PolicyDecision::AllowImmediate => {
+            // No interaction needed, proceed directly
+        }
+        PolicyDecision::AllowWithConfirm => {
+            // User already confirmed by clicking Allow in authctl
         }
         PolicyDecision::RequireAuth => {
-            // In confirm-only mode, the request from authctl means user already confirmed
+            // Password was already validated by authctl before reaching here
             // Cache this for future requests within timeout
             if !state.cache.is_valid(caller.uid, &request.target) {
                 state.cache.insert(caller.uid, request.target.clone(), 300);

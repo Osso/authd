@@ -109,7 +109,8 @@ impl PolicyEngine {
         }
 
         match rule.auth {
-            AuthRequirement::None => PolicyDecision::Allow,
+            AuthRequirement::None => PolicyDecision::AllowImmediate,
+            AuthRequirement::Confirm => PolicyDecision::AllowWithConfirm,
             AuthRequirement::Password => PolicyDecision::RequireAuth,
             AuthRequirement::Deny => PolicyDecision::Denied("target denied by policy".into()),
         }
@@ -118,9 +119,15 @@ impl PolicyEngine {
 
 #[derive(Debug, Clone)]
 pub enum PolicyDecision {
-    Allow,
+    /// Run immediately, no interaction
+    AllowImmediate,
+    /// Show confirmation dialog
+    AllowWithConfirm,
+    /// Require password authentication
     RequireAuth,
+    /// Denied by policy
     Denied(String),
+    /// No matching policy
     Unknown,
 }
 
@@ -193,7 +200,7 @@ mod tests {
         // This test passes if user is in wheel, fails with Denied otherwise
         // Skip assertion if user not in wheel (CI environments)
         if crate::pam::user_in_group(uid, "wheel") {
-            assert!(matches!(decision, PolicyDecision::Allow));
+            assert!(matches!(decision, PolicyDecision::AllowImmediate));
         }
     }
 

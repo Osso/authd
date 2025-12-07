@@ -204,6 +204,7 @@ impl PolicyEngine {
 
         match rule.auth {
             AuthRequirement::None => PolicyDecision::Allow,
+            AuthRequirement::Confirm => PolicyDecision::Allow, // CLI has no dialog, treat as allow
             AuthRequirement::Password => PolicyDecision::RequireAuth,
             AuthRequirement::Deny => PolicyDecision::Denied("denied by policy".into()),
         }

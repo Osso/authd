@@ -84,9 +84,14 @@ fn default_cache_timeout() -> u64 {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum AuthRequirement {
-    #[default]
-    Password,
+    /// No interaction - run immediately
     None,
+    /// Show confirmation dialog (default)
+    #[default]
+    Confirm,
+    /// Require password authentication
+    Password,
+    /// Always deny
     Deny,
 }
 
@@ -148,7 +153,7 @@ mod tests {
         assert_eq!(rule.target, PathBuf::from("/usr/bin/test"));
         assert!(rule.allow_groups.is_empty());
         assert!(rule.allow_users.is_empty());
-        assert!(matches!(rule.auth, AuthRequirement::Password));
+        assert!(matches!(rule.auth, AuthRequirement::Confirm));
         assert_eq!(rule.cache_timeout, 300);
     }
 
@@ -173,12 +178,16 @@ mod tests {
     #[test]
     fn auth_requirement_variants() {
         assert!(matches!(
-            toml::from_str::<PolicyRule>("target = \"/bin/x\"\nauth = \"password\"").unwrap().auth,
-            AuthRequirement::Password
-        ));
-        assert!(matches!(
             toml::from_str::<PolicyRule>("target = \"/bin/x\"\nauth = \"none\"").unwrap().auth,
             AuthRequirement::None
+        ));
+        assert!(matches!(
+            toml::from_str::<PolicyRule>("target = \"/bin/x\"\nauth = \"confirm\"").unwrap().auth,
+            AuthRequirement::Confirm
+        ));
+        assert!(matches!(
+            toml::from_str::<PolicyRule>("target = \"/bin/x\"\nauth = \"password\"").unwrap().auth,
+            AuthRequirement::Password
         ));
         assert!(matches!(
             toml::from_str::<PolicyRule>("target = \"/bin/x\"\nauth = \"deny\"").unwrap().auth,
