@@ -309,7 +309,6 @@ dependencies = [
  "anyhow",
  "authd-policy",
  "authd-protocol",
- "pam",
  "rmp-serde",
  "serde",
  "thiserror 2.0.17",

@@ -8,8 +8,6 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixListener as TokioUnixListener;
 use tracing::{error, info};
 
-mod pam;
-
 struct AppState {
     policy: PolicyEngine,
 }
