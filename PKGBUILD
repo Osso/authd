@@ -35,4 +35,7 @@ package() {
 
     # Create policy directory
     install -dm755 "$pkgdir/etc/authd/policies.d"
+
+    # Pacman hook to replace pkexec after polkit updates
+    install -Dm644 authd-pkexec.hook "$pkgdir/usr/share/libalpm/hooks/authd-pkexec.hook"
 }

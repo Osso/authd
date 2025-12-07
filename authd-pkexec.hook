@@ -1,0 +1,10 @@
+[Trigger]
+Operation = Install
+Operation = Upgrade
+Type = Package
+Target = polkit
+
+[Action]
+Description = Replacing pkexec with authd-pkexec...
+When = PostTransaction
+Exec = /usr/bin/ln -sf /usr/bin/authd-pkexec /usr/bin/pkexec
