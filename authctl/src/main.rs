@@ -1,8 +1,10 @@
 use authd_protocol::{AuthRequest, AuthResponse, SOCKET_PATH, wayland_env};
 use iced::keyboard::{self, Key};
 use iced::widget::{column, container, row, text, horizontal_rule};
+use iced::border::Radius;
 use iced::Color;
 use iced_layershell::Appearance;
+use iced::theme::Palette;
 use iced::{Element, Subscription, Task, Theme};
 use iced_layershell::reexport::{Anchor, KeyboardInteractivity};
 use iced_layershell::settings::{LayerShellSettings, Settings};
@@ -143,9 +145,10 @@ impl Application for App {
             Status::Failed(msg) => text(msg.as_str()).size(14),
         };
 
+        let theme = ayu_dark_theme();
         let actions = row![
-            text("[Enter] Allow").size(14).color(Color::from_rgb(0.4, 0.8, 0.4)),
-            text("[Esc] Cancel").size(14),
+            text("[Enter] Allow").size(14).color(theme.palette().success),
+            text("[Esc] Cancel").size(14).color(theme.palette().danger),
         ]
         .spacing(20);
 
@@ -163,6 +166,15 @@ impl Application for App {
         container(content)
             .center_x(450)
             .center_y(200)
+            .style(|_theme| container::Style {
+                background: Some(Color::from_rgba(0.118, 0.133, 0.165, 0.98).into()),
+                border: iced::Border {
+                    color: Color::from_rgb8(0x56, 0x5B, 0x66), // mOutline
+                    width: 1.0,
+                    radius: Radius::from(12.0),
+                },
+                ..Default::default()
+            })
             .into()
     }
 
@@ -174,12 +186,30 @@ impl Application for App {
         })
     }
 
+    fn theme(&self) -> Theme {
+        ayu_dark_theme()
+    }
+
     fn style(&self, theme: &Self::Theme) -> Appearance {
         Appearance {
-            background_color: Color::from_rgba(0.2, 0.2, 0.2, 0.95),
+            background_color: Color::TRANSPARENT,
             text_color: theme.palette().text,
         }
     }
+}
+
+fn ayu_dark_theme() -> Theme {
+    // Colors from quickshell Ayu.json
+    Theme::custom(
+        "Ayu Dark".to_string(),
+        Palette {
+            background: Color::from_rgb8(0x0B, 0x0E, 0x14), // mSurfaceVariant
+            text: Color::from_rgb8(0xBF, 0xBD, 0xB6),       // mOnSurface
+            primary: Color::from_rgb8(0xE6, 0xB4, 0x50),    // mPrimary (yellow)
+            success: Color::from_rgb8(0xAA, 0xD9, 0x4C),    // mSecondary (green)
+            danger: Color::from_rgb8(0xD9, 0x57, 0x57),     // mError (red)
+        },
+    )
 }
 
 fn parse_args(args: &[String]) -> (PathBuf, Vec<String>) {
