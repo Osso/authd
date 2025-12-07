@@ -15,3 +15,6 @@ thiserror.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 anyhow = "1"
+libc = "0.2"
+iced = { version = "0.13", features = ["tokio"] }
+iced_sessionlock = "0.13"

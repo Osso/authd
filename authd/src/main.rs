@@ -1,5 +1,8 @@
+mod dialog;
+
 use authd_policy::{PolicyDecision, PolicyEngine};
 use authd_protocol::{AuthRequest, AuthResponse, CallerInfo, SOCKET_PATH};
+use dialog::{show_confirmation_dialog, DialogResult};
 use std::fs;
 use std::os::unix::prelude::*;
 use std::path::PathBuf;
@@ -98,8 +101,8 @@ async fn send_response(stream: &mut tokio::net::UnixStream, response: AuthRespon
 async fn process_request(caller: &CallerInfo, request: &AuthRequest, state: &AppState) -> AuthResponse {
     info!("auth request: target={:?}", request.target);
 
-    // Check policy
-    let decision = state.policy.check(&request.target, caller.uid);
+    // Check policy (pass caller exe for trusted caller bypass)
+    let decision = state.policy.check_with_caller(&request.target, caller.uid, Some(&caller.exe));
 
     match decision {
         PolicyDecision::Unknown => {
@@ -112,7 +115,23 @@ async fn process_request(caller: &CallerInfo, request: &AuthRequest, state: &App
             // No interaction needed, proceed directly
         }
         PolicyDecision::AllowWithConfirm => {
-            // User already confirmed by clicking Allow in authctl
+            // Show confirmation dialog (fork, drop privs, run GUI)
+            let result = show_confirmation_dialog(caller, &request.target, &request.args, &request.env);
+            match result {
+                DialogResult::Confirmed => {
+                    info!("user confirmed");
+                }
+                DialogResult::Denied => {
+                    return AuthResponse::Denied {
+                        reason: "user cancelled".into(),
+                    };
+                }
+                DialogResult::Error => {
+                    return AuthResponse::Error {
+                        message: "failed to show confirmation dialog".into(),
+                    };
+                }
+            }
         }
         PolicyDecision::RequireAuth => {
             // Password auth not supported via GUI - use authsudo instead

@@ -69,6 +69,9 @@ pub struct PolicyRule {
     /// Users allowed to run this target
     #[serde(default)]
     pub allow_users: Vec<String>,
+    /// Caller binaries that bypass auth (e.g., "/usr/bin/claude")
+    #[serde(default)]
+    pub allow_callers: Vec<PathBuf>,
     /// Auth requirement: "password", "none", "deny"
     #[serde(default)]
     pub auth: AuthRequirement,

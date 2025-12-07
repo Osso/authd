@@ -31,7 +31,7 @@ pub enum PolicyDecision {
 
 #[derive(Debug, Default)]
 pub struct PolicyEngine {
-    rules: HashMap<PathBuf, PolicyRule>,
+    rules: HashMap<PathBuf, Vec<PolicyRule>>,
 }
 
 impl PolicyEngine {
@@ -41,7 +41,10 @@ impl PolicyEngine {
 
     /// Add a rule directly (useful for testing)
     pub fn add_rule(&mut self, rule: PolicyRule) {
-        self.rules.insert(rule.target.clone(), rule);
+        self.rules
+            .entry(rule.target.clone())
+            .or_default()
+            .push(rule);
     }
 
     /// Load policies from TOML string
@@ -53,7 +56,10 @@ impl PolicyEngine {
 
         let count = config.rules.len();
         for rule in config.rules {
-            self.rules.insert(rule.target.clone(), rule);
+            self.rules
+                .entry(rule.target.clone())
+                .or_default()
+                .push(rule);
         }
         Ok(count)
     }
@@ -92,7 +98,10 @@ impl PolicyEngine {
 
         let count = config.rules.len();
         for rule in config.rules {
-            self.rules.insert(rule.target.clone(), rule);
+            self.rules
+                .entry(rule.target.clone())
+                .or_default()
+                .push(rule);
         }
 
         Ok(count)
@@ -100,35 +109,74 @@ impl PolicyEngine {
 
     /// Check if a user is authorized to run a target
     pub fn check(&self, target: &Path, uid: u32) -> PolicyDecision {
-        // Try exact match first, then wildcard
-        let rule = self.rules.get(target)
-            .or_else(|| self.rules.get(Path::new("*")));
+        self.check_with_caller(target, uid, None)
+    }
 
-        let Some(rule) = rule else {
+    /// Check with caller info
+    pub fn check_with_caller(&self, target: &Path, uid: u32, caller_exe: Option<&Path>) -> PolicyDecision {
+        // Collect matching rules: exact match first, then wildcard
+        let mut matching_rules: Vec<&PolicyRule> = Vec::new();
+
+        if let Some(exact_rules) = self.rules.get(target) {
+            matching_rules.extend(exact_rules);
+        }
+        if let Some(wildcard_rules) = self.rules.get(Path::new("*")) {
+            matching_rules.extend(wildcard_rules);
+        }
+
+        if matching_rules.is_empty() {
             return PolicyDecision::Unknown;
-        };
+        }
 
-        // Check user/group permissions
         let username = username_from_uid(uid);
-        let user_allowed = username
-            .as_ref()
-            .is_some_and(|u| rule.allow_users.contains(u));
 
-        let group_allowed = rule
-            .allow_groups
-            .iter()
-            .any(|g| user_in_group(uid, g));
+        // Find the least restrictive auth among all matching rules
+        // Priority: None (0) > Confirm (1) > Password (2) > Deny (3)
+        let mut best_auth: Option<&AuthRequirement> = None;
 
-        if !user_allowed && !group_allowed {
-            return PolicyDecision::Denied("user not authorized".into());
+        for rule in &matching_rules {
+            let user_allowed = username
+                .as_ref()
+                .is_some_and(|u| rule.allow_users.contains(u));
+
+            let group_allowed = rule
+                .allow_groups
+                .iter()
+                .any(|g| user_in_group(uid, g));
+
+            let caller_allowed = caller_exe
+                .is_some_and(|c| rule.allow_callers.iter().any(|ac| ac == c));
+
+            if user_allowed || group_allowed || caller_allowed {
+                // Early return for None (can't do better)
+                if matches!(rule.auth, AuthRequirement::None) {
+                    return PolicyDecision::AllowImmediate;
+                }
+
+                // Track best auth seen
+                let dominated = best_auth.is_some_and(|best| auth_priority(&rule.auth) >= auth_priority(best));
+                if !dominated {
+                    best_auth = Some(&rule.auth);
+                }
+            }
         }
 
-        match rule.auth {
-            AuthRequirement::None => PolicyDecision::AllowImmediate,
-            AuthRequirement::Confirm => PolicyDecision::AllowWithConfirm,
-            AuthRequirement::Password => PolicyDecision::RequireAuth,
-            AuthRequirement::Deny => PolicyDecision::Denied("target denied by policy".into()),
+        match best_auth {
+            Some(AuthRequirement::None) => PolicyDecision::AllowImmediate,
+            Some(AuthRequirement::Confirm) => PolicyDecision::AllowWithConfirm,
+            Some(AuthRequirement::Password) => PolicyDecision::RequireAuth,
+            Some(AuthRequirement::Deny) => PolicyDecision::Denied("target denied by policy".into()),
+            None => PolicyDecision::Denied("user not authorized".into()),
         }
+    }
+}
+
+fn auth_priority(auth: &AuthRequirement) -> u8 {
+    match auth {
+        AuthRequirement::None => 0,
+        AuthRequirement::Confirm => 1,
+        AuthRequirement::Password => 2,
+        AuthRequirement::Deny => 3,
     }
 }
 
@@ -200,6 +248,7 @@ mod tests {
             target: PathBuf::from("/usr/bin/forbidden"),
             allow_users: vec!["root".into()],
             allow_groups: vec![],
+            allow_callers: vec![],
             auth: AuthRequirement::Deny,
             cache_timeout: 300,
         });
@@ -219,6 +268,7 @@ mod tests {
             target: PathBuf::from("*"),
             allow_users: vec![username],
             allow_groups: vec![],
+            allow_callers: vec![],
             auth: AuthRequirement::None,
             cache_timeout: 300,
         });
@@ -229,7 +279,7 @@ mod tests {
     }
 
     #[test]
-    fn exact_match_priority() {
+    fn least_restrictive_wins() {
         let mut engine = PolicyEngine::new();
         let uid = users::get_current_uid();
         let username = username_from_uid(uid).unwrap();
@@ -239,6 +289,7 @@ mod tests {
             target: PathBuf::from("*"),
             allow_users: vec![username.clone()],
             allow_groups: vec![],
+            allow_callers: vec![],
             auth: AuthRequirement::None,
             cache_timeout: 300,
         });
@@ -248,13 +299,14 @@ mod tests {
             target: PathBuf::from("/usr/bin/sensitive"),
             allow_users: vec![username],
             allow_groups: vec![],
+            allow_callers: vec![],
             auth: AuthRequirement::Password,
             cache_timeout: 300,
         });
 
-        // Exact match should take priority
+        // Least restrictive wins - wildcard's auth=none beats exact's auth=password
         let decision = engine.check(Path::new("/usr/bin/sensitive"), uid);
-        assert!(matches!(decision, PolicyDecision::RequireAuth));
+        assert!(matches!(decision, PolicyDecision::AllowImmediate));
 
         // Other targets use wildcard
         let decision = engine.check(Path::new("/usr/bin/other"), uid);
@@ -269,6 +321,7 @@ mod tests {
             target: PathBuf::from("/usr/bin/wheeltest"),
             allow_users: vec![],
             allow_groups: vec!["wheel".into()],
+            allow_callers: vec![],
             auth: AuthRequirement::None,
             cache_timeout: 300,
         });
@@ -290,6 +343,7 @@ mod tests {
             target: PathBuf::from("/usr/bin/usertest"),
             allow_users: vec![username],
             allow_groups: vec![],
+            allow_callers: vec![],
             auth: AuthRequirement::Password,
             cache_timeout: 300,
         });
@@ -305,6 +359,7 @@ mod tests {
             target: PathBuf::from("/usr/bin/restricted"),
             allow_users: vec!["nonexistent_user_xyz".into()],
             allow_groups: vec!["nonexistent_group_xyz".into()],
+            allow_callers: vec![],
             auth: AuthRequirement::None,
             cache_timeout: 300,
         });
@@ -323,11 +378,138 @@ mod tests {
             target: PathBuf::from("/usr/bin/confirm"),
             allow_users: vec![username],
             allow_groups: vec![],
+            allow_callers: vec![],
             auth: AuthRequirement::Confirm,
             cache_timeout: 300,
         });
 
         let decision = engine.check(Path::new("/usr/bin/confirm"), uid);
         assert!(matches!(decision, PolicyDecision::AllowWithConfirm));
+    }
+
+    #[test]
+    fn caller_authorization() {
+        let mut engine = PolicyEngine::new();
+        let uid = users::get_current_uid();
+
+        // Rule that only allows a specific caller (no users/groups)
+        engine.add_rule(PolicyRule {
+            target: PathBuf::from("/usr/bin/sensitive"),
+            allow_users: vec![],
+            allow_groups: vec![],
+            allow_callers: vec![PathBuf::from("/usr/bin/claude")],
+            auth: AuthRequirement::None,
+            cache_timeout: 300,
+        });
+
+        // Without caller info - denied (no user/group match)
+        let decision = engine.check(Path::new("/usr/bin/sensitive"), uid);
+        assert!(matches!(decision, PolicyDecision::Denied(_)));
+
+        // Untrusted caller - denied
+        let decision = engine.check_with_caller(
+            Path::new("/usr/bin/sensitive"),
+            uid,
+            Some(Path::new("/usr/bin/unknown")),
+        );
+        assert!(matches!(decision, PolicyDecision::Denied(_)));
+
+        // Trusted caller - allowed (auth=none means immediate)
+        let decision = engine.check_with_caller(
+            Path::new("/usr/bin/sensitive"),
+            uid,
+            Some(Path::new("/usr/bin/claude")),
+        );
+        assert!(matches!(decision, PolicyDecision::AllowImmediate));
+    }
+
+    #[test]
+    fn caller_respects_auth() {
+        let mut engine = PolicyEngine::new();
+        let uid = users::get_current_uid();
+
+        // Caller allowed but auth=confirm
+        engine.add_rule(PolicyRule {
+            target: PathBuf::from("/usr/bin/confirm_cmd"),
+            allow_users: vec![],
+            allow_groups: vec![],
+            allow_callers: vec![PathBuf::from("/usr/bin/claude")],
+            auth: AuthRequirement::Confirm,
+            cache_timeout: 300,
+        });
+
+        let decision = engine.check_with_caller(
+            Path::new("/usr/bin/confirm_cmd"),
+            uid,
+            Some(Path::new("/usr/bin/claude")),
+        );
+        assert!(matches!(decision, PolicyDecision::AllowWithConfirm));
+    }
+
+    #[test]
+    fn multiple_wildcard_rules() {
+        let mut engine = PolicyEngine::new();
+        let uid = users::get_current_uid();
+        let username = username_from_uid(uid).unwrap();
+
+        // Rule 1: user with confirm
+        engine.add_rule(PolicyRule {
+            target: PathBuf::from("*"),
+            allow_users: vec![username],
+            allow_groups: vec![],
+            allow_callers: vec![],
+            auth: AuthRequirement::Confirm,
+            cache_timeout: 300,
+        });
+
+        // Rule 2: claude caller with none
+        engine.add_rule(PolicyRule {
+            target: PathBuf::from("*"),
+            allow_users: vec![],
+            allow_groups: vec![],
+            allow_callers: vec![PathBuf::from("/usr/bin/claude")],
+            auth: AuthRequirement::None,
+            cache_timeout: 300,
+        });
+
+        // Without caller - matches first rule (user allowed, confirm)
+        let decision = engine.check(Path::new("/usr/bin/anything"), uid);
+        assert!(matches!(decision, PolicyDecision::AllowWithConfirm));
+
+        // With claude caller - picks least restrictive (none) from both matching rules
+        let decision = engine.check_with_caller(
+            Path::new("/usr/bin/anything"),
+            uid,
+            Some(Path::new("/usr/bin/claude")),
+        );
+        assert!(matches!(decision, PolicyDecision::AllowImmediate));
+    }
+
+    #[test]
+    fn caller_only_rule() {
+        let mut engine = PolicyEngine::new();
+        let uid = users::get_current_uid();
+
+        // Only claude caller is allowed
+        engine.add_rule(PolicyRule {
+            target: PathBuf::from("*"),
+            allow_users: vec![],
+            allow_groups: vec![],
+            allow_callers: vec![PathBuf::from("/usr/bin/claude")],
+            auth: AuthRequirement::None,
+            cache_timeout: 300,
+        });
+
+        // Without claude - denied
+        let decision = engine.check(Path::new("/usr/bin/anything"), uid);
+        assert!(matches!(decision, PolicyDecision::Denied(_)));
+
+        // With claude - allowed
+        let decision = engine.check_with_caller(
+            Path::new("/usr/bin/anything"),
+            uid,
+            Some(Path::new("/usr/bin/claude")),
+        );
+        assert!(matches!(decision, PolicyDecision::AllowImmediate));
     }
 }

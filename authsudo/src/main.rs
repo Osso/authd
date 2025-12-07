@@ -40,8 +40,11 @@ fn main() {
         process::exit(1);
     }
 
+    // Get caller (parent process) for trusted caller bypass
+    let caller_exe = get_caller_exe();
+
     // Check policy
-    match engine.check(&target, real_uid) {
+    match engine.check_with_caller(&target, real_uid, caller_exe.as_deref()) {
         PolicyDecision::AllowImmediate | PolicyDecision::AllowWithConfirm => {
             // Allowed without auth (CLI has no dialog, treat confirm as allow)
         }
@@ -80,6 +83,12 @@ fn main() {
     // If we get here, exec failed
     eprintln!("authsudo: failed to execute {}: {}", target.display(), err);
     process::exit(126);
+}
+
+/// Get the caller's executable path (parent process)
+fn get_caller_exe() -> Option<PathBuf> {
+    let ppid = unsafe { libc::getppid() };
+    std::fs::read_link(format!("/proc/{}/exe", ppid)).ok()
 }
 
 /// Resolve a command to its absolute path

@@ -54,7 +54,8 @@ Policies are TOML files in `/etc/authd/policies.d/`.
 target = "/usr/bin/gparted"
 allow_groups = ["wheel"]
 allow_users = ["admin"]
-auth = "none"
+allow_callers = ["/usr/bin/claude"]   # Trusted callers bypass auth
+auth = "confirm"
 cache_timeout = 300
 
 [[rules]]
@@ -79,6 +80,12 @@ auth = "none"
 1. Exact path match takes priority
 2. Wildcard `*` matches any command
 3. User must be in `allow_users` OR a member of `allow_groups`
+
+### Trusted Callers
+
+The `allow_callers` field works like `allow_users` and `allow_groups` - it authorizes which binaries can run the target. The caller is identified via `/proc/<pid>/exe`.
+
+To allow Claude to run commands without confirmation, use `allow_callers` with `auth = "none"`.
 
 ## Installation
 
@@ -174,6 +181,16 @@ auth = "password"
 target = "/usr/bin/rm"
 allow_groups = ["wheel"]
 auth = "deny"
+```
+
+### Allow Claude Code to run commands without prompts
+
+```toml
+# /etc/authd/policies.d/claude.toml
+[[rules]]
+target = "*"
+allow_callers = ["/usr/bin/claude"]
+auth = "none"
 ```
 
 ## Security Model
