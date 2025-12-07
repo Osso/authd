@@ -27,6 +27,7 @@ fn main() {
         args: target_args,
         env: collect_wayland_env(),
         password: String::new(),
+        confirm_only: false,
     };
 
     match send_request(&request) {

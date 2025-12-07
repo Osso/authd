@@ -342,8 +342,10 @@ name = "authsudo"
 version = "0.1.0"
 dependencies = [
  "authd-policy",
+ "authd-protocol",
  "libc",
  "pam",
+ "rmp-serde",
  "rpassword",
 ]
 

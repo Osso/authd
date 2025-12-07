@@ -14,6 +14,9 @@ pub struct AuthRequest {
     pub env: HashMap<String, String>,
     /// User's password (empty if using cached auth)
     pub password: String,
+    /// If true, only show confirmation dialog, don't spawn process
+    #[serde(default)]
+    pub confirm_only: bool,
 }
 
 /// Check if user has cached auth (no password needed)
@@ -119,6 +122,7 @@ mod tests {
             args: vec!["--flag".into(), "value".into()],
             env: HashMap::from([("KEY".into(), "VALUE".into())]),
             password: String::new(),
+            confirm_only: false,
         };
 
         let encoded = rmp_serde::to_vec(&request).unwrap();

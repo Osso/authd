@@ -101,6 +101,24 @@ async fn send_response(stream: &mut tokio::net::UnixStream, response: AuthRespon
 async fn process_request(caller: &CallerInfo, request: &AuthRequest, state: &AppState) -> AuthResponse {
     info!("auth request: target={:?}", request.target);
 
+    // If confirm_only from authsudo, skip policy check (authsudo already validated with real uid)
+    let is_authsudo = caller.exe.ends_with("authsudo");
+    if request.confirm_only && is_authsudo {
+        let result = show_confirmation_dialog(caller, &request.target, &request.args, &request.env);
+        return match result {
+            DialogResult::Confirmed => {
+                info!("user confirmed");
+                AuthResponse::Success { pid: 0 }
+            }
+            DialogResult::Denied => AuthResponse::Denied {
+                reason: "user cancelled".into(),
+            },
+            DialogResult::Error => AuthResponse::Error {
+                message: "failed to show confirmation dialog".into(),
+            },
+        };
+    }
+
     // Check policy (pass caller exe for trusted caller bypass)
     let decision = state.policy.check_with_caller(&request.target, caller.uid, Some(&caller.exe));
 
@@ -139,6 +157,11 @@ async fn process_request(caller: &CallerInfo, request: &AuthRequest, state: &App
                 message: "Password auth requires terminal. Use: authsudo".into(),
             };
         }
+    }
+
+    // If confirm_only, don't spawn - just return success
+    if request.confirm_only {
+        return AuthResponse::Success { pid: 0 };
     }
 
     // Spawn process via systemd-run

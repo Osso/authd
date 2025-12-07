@@ -9,6 +9,8 @@ path = "src/main.rs"
 
 [dependencies]
 authd-policy = { path = "../policy" }
+authd-protocol = { path = "../protocol" }
 libc = "0.2"
 pam = "0.8"
 rpassword = "7"
+rmp-serde = "1"

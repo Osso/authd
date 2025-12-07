@@ -3,12 +3,16 @@
 //! A minimal setuid binary that:
 //! 1. Gets the real UID of the caller
 //! 2. Checks policies
-//! 3. Authenticates if required
+//! 3. Authenticates if required (or requests confirmation via authd)
 //! 4. exec() the target command
 
 use authd_policy::{username_from_uid, PolicyDecision, PolicyEngine};
+use authd_protocol::{AuthRequest, AuthResponse, SOCKET_PATH, wayland_env};
 use pam::Client;
+use std::collections::HashMap;
 use std::env;
+use std::io::{Read, Write};
+use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{self, Command};
@@ -45,8 +49,15 @@ fn main() {
 
     // Check policy
     match engine.check_with_caller(&target, real_uid, caller_exe.as_deref()) {
-        PolicyDecision::AllowImmediate | PolicyDecision::AllowWithConfirm => {
-            // Allowed without auth (CLI has no dialog, treat confirm as allow)
+        PolicyDecision::AllowImmediate => {
+            // Allowed without any interaction
+        }
+        PolicyDecision::AllowWithConfirm => {
+            // Request confirmation from authd (shows session-lock dialog)
+            if !request_confirmation(&target, &target_args) {
+                eprintln!("authsudo: authorization denied");
+                process::exit(1);
+            }
         }
         PolicyDecision::RequireAuth => {
             // Need password authentication
@@ -111,6 +122,57 @@ fn resolve_path(cmd: &Path) -> Option<PathBuf> {
     }
 
     None
+}
+
+/// Request confirmation from authd via session-lock dialog
+fn request_confirmation(target: &Path, args: &[&str]) -> bool {
+    let request = AuthRequest {
+        target: target.to_path_buf(),
+        args: args.iter().map(|s| s.to_string()).collect(),
+        env: collect_wayland_env(),
+        password: String::new(),
+        confirm_only: true,
+    };
+
+    let mut stream = match UnixStream::connect(SOCKET_PATH) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("authsudo: cannot connect to authd: {}", e);
+            return false;
+        }
+    };
+
+    let data = match rmp_serde::to_vec(&request) {
+        Ok(d) => d,
+        Err(_) => return false,
+    };
+
+    if stream.write_all(&data).is_err() {
+        return false;
+    }
+
+    let mut buf = vec![0u8; 4096];
+    let n = match stream.read(&mut buf) {
+        Ok(n) => n,
+        Err(_) => return false,
+    };
+
+    match rmp_serde::from_slice::<AuthResponse>(&buf[..n]) {
+        Ok(AuthResponse::Success { .. }) => true,
+        Ok(AuthResponse::Denied { reason }) => {
+            eprintln!("authsudo: {}", reason);
+            false
+        }
+        _ => false,
+    }
+}
+
+/// Collect Wayland environment variables
+fn collect_wayland_env() -> HashMap<String, String> {
+    wayland_env()
+        .into_iter()
+        .filter_map(|key| env::var(key).ok().map(|val| (key.to_string(), val)))
+        .collect()
 }
 
 /// Authenticate user via PAM
