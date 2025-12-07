@@ -1,0 +1,19 @@
+post_install() {
+    # Replace polkit's pkexec with authd-pkexec
+    ln -sf /usr/bin/authd-pkexec /usr/bin/pkexec
+
+    echo ":: authd installed. Enable with: systemctl enable --now authd"
+    echo ":: /usr/bin/pkexec now points to authd-pkexec"
+}
+
+post_upgrade() {
+    # Ensure symlink is in place after upgrade
+    ln -sf /usr/bin/authd-pkexec /usr/bin/pkexec
+}
+
+post_remove() {
+    # Restore original pkexec if polkit is installed
+    if pacman -Q polkit &>/dev/null; then
+        echo ":: Reinstall polkit to restore original pkexec: pacman -S polkit"
+    fi
+}

@@ -9,6 +9,7 @@ license=('MIT')
 depends=('pam' 'systemd')
 makedepends=('cargo' 'clang')
 backup=('etc/pam.d/authd')
+install=authd.install
 source=()
 
 build() {
