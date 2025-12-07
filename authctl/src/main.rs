@@ -1,6 +1,8 @@
 use authd_protocol::{AuthRequest, AuthResponse, SOCKET_PATH, wayland_env};
 use iced::keyboard::{self, Key};
-use iced::widget::{column, container, text};
+use iced::widget::{column, container, row, text, horizontal_rule};
+use iced::Color;
+use iced_layershell::Appearance;
 use iced::{Element, Subscription, Task, Theme};
 use iced_layershell::reexport::{Anchor, KeyboardInteractivity};
 use iced_layershell::settings::{LayerShellSettings, Settings};
@@ -97,11 +99,24 @@ impl Application for App {
                     Ok(AuthResponse::Denied { reason }) => {
                         self.status = Status::Failed(format!("Denied: {}", reason));
                     }
-                    Ok(resp) => {
-                        self.status = Status::Failed(format!("{:?}", resp));
+                    Ok(AuthResponse::UnknownTarget) => {
+                        self.status = Status::Failed(
+                            "No policy found for this program".into()
+                        );
+                    }
+                    Ok(AuthResponse::AuthFailed) => {
+                        self.status = Status::Failed("Authentication failed".into());
+                    }
+                    Ok(AuthResponse::Error { message }) => {
+                        self.status = Status::Failed(format!("Error: {}", message));
                     }
                     Err(e) => {
-                        self.status = Status::Failed(e);
+                        let msg = if e.contains("connect:") {
+                            "authd daemon is not running".into()
+                        } else {
+                            format!("Connection error: {}", e)
+                        };
+                        self.status = Status::Failed(msg);
                     }
                 }
                 Task::none()
@@ -111,23 +126,44 @@ impl Application for App {
     }
 
     fn view(&self) -> Element<'_, Self::Message, Self::Theme, iced::Renderer> {
-        let title = text("Run as root:").size(18);
-        let target_text = text(format!("{:?}", self.target)).size(14);
+        let title = text("Authorization Required").size(20);
 
-        let hint = text("Press Enter to confirm, Esc to cancel").size(12);
+        let target_display = self.target.display().to_string();
+        let command = if self.args.is_empty() {
+            target_display
+        } else {
+            format!("{} {}", target_display, self.args.join(" "))
+        };
+        let command_text = text(command).size(14);
 
         let status_text = match &self.status {
             Status::Ready => text(""),
-            Status::Confirming => text("Authorizing..."),
-            Status::Success => text("Success!"),
-            Status::Failed(msg) => text(msg.as_str()),
+            Status::Confirming => text("Authorizing...").size(14),
+            Status::Success => text("Success!").size(14),
+            Status::Failed(msg) => text(msg.as_str()).size(14),
         };
 
-        let content = column![title, target_text, hint, status_text]
-            .spacing(12)
-            .padding(20);
+        let actions = row![
+            text("[Enter] Allow").size(14).color(Color::from_rgb(0.4, 0.8, 0.4)),
+            text("[Esc] Cancel").size(14),
+        ]
+        .spacing(20);
 
-        container(content).into()
+        let content = column![
+            title,
+            horizontal_rule(1),
+            text("An application wants to run as root:").size(12),
+            command_text,
+            status_text,
+            actions,
+        ]
+        .spacing(12)
+        .padding(20);
+
+        container(content)
+            .center_x(450)
+            .center_y(200)
+            .into()
     }
 
     fn subscription(&self) -> Subscription<Self::Message> {
@@ -136,6 +172,13 @@ impl Application for App {
             Key::Named(keyboard::key::Named::Escape) => Some(Message::Cancel),
             _ => None,
         })
+    }
+
+    fn style(&self, theme: &Self::Theme) -> Appearance {
+        Appearance {
+            background_color: Color::from_rgba(0.2, 0.2, 0.2, 0.95),
+            text_color: theme.palette().text,
+        }
     }
 }
 
