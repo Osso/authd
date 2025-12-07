@@ -25,6 +25,9 @@ package() {
     install -Dm755 target/release/authctl "$pkgdir/usr/bin/authctl"
     install -Dm755 target/release/pkexec "$pkgdir/usr/bin/authd-pkexec"
 
+    # authsudo - setuid root for CLI privilege escalation
+    install -Dm4755 target/release/authsudo "$pkgdir/usr/bin/authsudo"
+
     # Systemd service
     install -Dm644 authd.service "$pkgdir/usr/lib/systemd/system/authd.service"
 
