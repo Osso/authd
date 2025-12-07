@@ -171,3 +171,45 @@ async fn send_request(request: AuthRequest) -> Result<AuthResponse, String> {
 
     rmp_serde::from_slice(&buf[..n]).map_err(|e| format!("deserialize: {}", e))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_args_empty() {
+        let (target, args) = parse_args(&[]);
+        assert_eq!(target, PathBuf::from(""));
+        assert!(args.is_empty());
+    }
+
+    #[test]
+    fn parse_args_target_only() {
+        let input = vec!["/usr/bin/test".to_string()];
+        let (target, args) = parse_args(&input);
+        assert_eq!(target, PathBuf::from("/usr/bin/test"));
+        assert!(args.is_empty());
+    }
+
+    #[test]
+    fn parse_args_with_arguments() {
+        let input = vec![
+            "/usr/bin/test".to_string(),
+            "--flag".to_string(),
+            "value".to_string(),
+        ];
+        let (target, args) = parse_args(&input);
+        assert_eq!(target, PathBuf::from("/usr/bin/test"));
+        assert_eq!(args, vec!["--flag", "value"]);
+    }
+
+    #[test]
+    fn collect_wayland_env_returns_hashmap() {
+        // Just verify it returns a valid hashmap (content depends on environment)
+        let env_map = collect_wayland_env();
+        // Should only contain keys from wayland_env()
+        for key in env_map.keys() {
+            assert!(wayland_env().contains(&key.as_str()));
+        }
+    }
+}
