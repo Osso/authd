@@ -6,17 +6,12 @@
 //! 3. Authenticates if required
 //! 4. exec() the target command
 
-use authd_protocol::{AuthRequirement, PolicyRule};
+use authd_policy::{username_from_uid, PolicyDecision, PolicyEngine};
 use pam::Client;
-use std::collections::HashMap;
 use std::env;
-use std::fs;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{self, Command};
-use users::os::unix::GroupExt;
-
-const POLICY_DIR: &str = "/etc/authd/policies.d";
 
 fn main() {
     // Get real UID (who invoked us, not effective UID which is root)
@@ -47,8 +42,8 @@ fn main() {
 
     // Check policy
     match engine.check(&target, real_uid) {
-        PolicyDecision::Allow => {
-            // Allowed without auth
+        PolicyDecision::AllowImmediate | PolicyDecision::AllowWithConfirm => {
+            // Allowed without auth (CLI has no dialog, treat confirm as allow)
         }
         PolicyDecision::RequireAuth => {
             // Need password authentication
@@ -127,117 +122,4 @@ fn authenticate_user(username: &str) -> bool {
         .set_credentials(username, &password);
 
     client.authenticate().is_ok()
-}
-
-// --- Policy Engine (minimal inline implementation) ---
-
-struct PolicyEngine {
-    rules: HashMap<PathBuf, PolicyRule>,
-}
-
-#[derive(Debug)]
-enum PolicyDecision {
-    Allow,
-    RequireAuth,
-    Denied(String),
-    Unknown,
-}
-
-impl PolicyEngine {
-    fn new() -> Self {
-        Self {
-            rules: HashMap::new(),
-        }
-    }
-
-    fn load(&mut self) -> Result<(), String> {
-        let policy_dir = Path::new(POLICY_DIR);
-        if !policy_dir.exists() {
-            return Ok(());
-        }
-
-        let entries = fs::read_dir(policy_dir).map_err(|e| e.to_string())?;
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().is_some_and(|e| e == "toml") {
-                let _ = self.load_file(&path);
-            }
-        }
-
-        Ok(())
-    }
-
-    fn load_file(&mut self, path: &Path) -> Result<(), String> {
-        let content = fs::read_to_string(path).map_err(|e| e.to_string())?;
-        let config: PolicyFile = toml::from_str(&content).map_err(|e| e.to_string())?;
-
-        for rule in config.rules {
-            self.rules.insert(rule.target.clone(), rule);
-        }
-
-        Ok(())
-    }
-
-    fn check(&self, target: &Path, uid: u32) -> PolicyDecision {
-        // Try exact match first, then wildcard
-        let rule = self.rules.get(target)
-            .or_else(|| self.rules.get(Path::new("*")));
-
-        let Some(rule) = rule else {
-            return PolicyDecision::Unknown;
-        };
-
-        // Check user/group permissions
-        let username = username_from_uid(uid);
-        let user_allowed = username
-            .as_ref()
-            .is_some_and(|u| rule.allow_users.contains(u));
-
-        let group_allowed = rule
-            .allow_groups
-            .iter()
-            .any(|g| user_in_group(uid, g));
-
-        if !user_allowed && !group_allowed {
-            return PolicyDecision::Denied("user not authorized".into());
-        }
-
-        match rule.auth {
-            AuthRequirement::None => PolicyDecision::Allow,
-            AuthRequirement::Confirm => PolicyDecision::Allow, // CLI has no dialog, treat as allow
-            AuthRequirement::Password => PolicyDecision::RequireAuth,
-            AuthRequirement::Deny => PolicyDecision::Denied("denied by policy".into()),
-        }
-    }
-}
-
-#[derive(serde::Deserialize)]
-struct PolicyFile {
-    #[serde(default)]
-    rules: Vec<PolicyRule>,
-}
-
-// --- User/group helpers ---
-
-fn username_from_uid(uid: u32) -> Option<String> {
-    users::get_user_by_uid(uid).map(|u| u.name().to_string_lossy().into_owned())
-}
-
-fn user_in_group(uid: u32, group_name: &str) -> bool {
-    let Some(user) = users::get_user_by_uid(uid) else {
-        return false;
-    };
-
-    let Some(group) = users::get_group_by_name(group_name) else {
-        return false;
-    };
-
-    // Check primary group
-    if user.primary_group_id() == group.gid() {
-        return true;
-    }
-
-    // Check supplementary groups
-    let username = user.name();
-    group.members().iter().any(|m| m == username)
 }

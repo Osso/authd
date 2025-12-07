@@ -1,6 +1,5 @@
 use pam::Client;
 use thiserror::Error;
-use users::os::unix::GroupExt;
 
 #[derive(Debug, Error)]
 #[allow(dead_code)]
@@ -27,29 +26,4 @@ pub fn authenticate(username: &str, password: &str) -> Result<(), AuthError> {
     client.open_session().map_err(|e| AuthError::Pam(e.to_string()))?;
 
     Ok(())
-}
-
-/// Get username from UID
-pub fn username_from_uid(uid: u32) -> Option<String> {
-    users::get_user_by_uid(uid).map(|u| u.name().to_string_lossy().into_owned())
-}
-
-/// Check if user is in a group
-pub fn user_in_group(uid: u32, group_name: &str) -> bool {
-    let Some(user) = users::get_user_by_uid(uid) else {
-        return false;
-    };
-
-    let Some(group) = users::get_group_by_name(group_name) else {
-        return false;
-    };
-
-    // Check primary group
-    if user.primary_group_id() == group.gid() {
-        return true;
-    }
-
-    // Check supplementary groups
-    let username = user.name();
-    group.members().iter().any(|m| m == username)
 }

@@ -4,6 +4,7 @@ members = [
     "authd",
     "authctl",
     "authsudo",
+    "policy",
     "protocol",
 ]
 
@@ -15,6 +16,7 @@ authors = ["Alessio Deiana <adeiana@gmail.com>"]
 
 [workspace.dependencies]
 authd-protocol = { path = "protocol" }
+authd-policy = { path = "policy" }
 serde = { version = "1", features = ["derive"] }
 rmp-serde = "1"
 tokio = { version = "1", features = ["full"] }

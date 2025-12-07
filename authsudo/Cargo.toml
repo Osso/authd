@@ -8,10 +8,7 @@ name = "authsudo"
 path = "src/main.rs"
 
 [dependencies]
-authd-protocol = { path = "../protocol" }
+authd-policy = { path = "../policy" }
 libc = "0.2"
 pam = "0.8"
 rpassword = "7"
-serde = { version = "1", features = ["derive"] }
-toml = "0.8"
-users = "0.11"

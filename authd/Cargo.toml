@@ -7,6 +7,7 @@ authors.workspace = true
 
 [dependencies]
 authd-protocol.workspace = true
+authd-policy.workspace = true
 serde.workspace = true
 rmp-serde.workspace = true
 tokio.workspace = true
@@ -15,5 +16,3 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 anyhow = "1"
 pam = "0.8"
-users = "0.11"
-toml = "0.8"

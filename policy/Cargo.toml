@@ -1,0 +1,11 @@
+[package]
+name = "authd-policy"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+authd-protocol = { path = "../protocol" }
+serde = { version = "1", features = ["derive"] }
+thiserror = "1"
+toml = "0.8"
+users = "0.11"

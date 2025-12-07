@@ -1,3 +1,4 @@
+use authd_policy::{PolicyDecision, PolicyEngine};
 use authd_protocol::{AuthRequest, AuthResponse, CallerInfo, SOCKET_PATH};
 use std::fs;
 use std::os::unix::prelude::*;
@@ -9,10 +10,8 @@ use tracing::{error, info};
 
 mod cache;
 mod pam;
-mod policy;
 
 use cache::AuthCache;
-use policy::{PolicyDecision, PolicyEngine};
 
 struct AppState {
     policy: PolicyEngine,

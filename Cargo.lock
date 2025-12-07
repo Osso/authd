@@ -307,15 +307,25 @@ name = "authd"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "authd-policy",
  "authd-protocol",
  "pam",
  "rmp-serde",
  "serde",
  "thiserror 2.0.17",
  "tokio",
- "toml",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "authd-policy"
+version = "0.1.0"
+dependencies = [
+ "authd-protocol",
+ "serde",
+ "thiserror 1.0.69",
+ "toml",
  "users 0.11.0",
 ]
 
@@ -333,13 +343,10 @@ dependencies = [
 name = "authsudo"
 version = "0.1.0"
 dependencies = [
- "authd-protocol",
+ "authd-policy",
  "libc",
  "pam",
  "rpassword",
- "serde",
- "toml",
- "users 0.11.0",
 ]
 
 [[package]]
