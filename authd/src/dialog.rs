@@ -41,17 +41,11 @@ pub fn show_confirmation_dialog(
         format!("{} {}", target.display(), args.join(" "))
     };
 
-    // Get username and home directory
-    let username = get_username(caller.uid).unwrap_or_else(|| "nobody".into());
-    let home = format!("/home/{}", username);
-
     // Spawn authd-dialog with dropped privileges
     let result = Command::new(&dialog_bin)
         .arg(&command)
         .uid(caller.uid)
         .gid(caller.gid)
-        .env("HOME", &home)
-        .env("USER", &username)
         .envs(
             // Only pass known safe Wayland env vars, not arbitrary client data
             wayland_env()
@@ -75,19 +69,3 @@ pub fn show_confirmation_dialog(
     }
 }
 
-fn get_username(uid: u32) -> Option<String> {
-    // Read /etc/passwd to find username for uid
-    if let Ok(content) = std::fs::read_to_string("/etc/passwd") {
-        for line in content.lines() {
-            let parts: Vec<&str> = line.split(':').collect();
-            if parts.len() >= 3 {
-                if let Ok(line_uid) = parts[2].parse::<u32>() {
-                    if line_uid == uid {
-                        return Some(parts[0].to_string());
-                    }
-                }
-            }
-        }
-    }
-    None
-}
