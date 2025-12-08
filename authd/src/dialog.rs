@@ -1,12 +1,13 @@
 //! Confirmation dialog for authd using ext-session-lock
 //!
-//! Forks a child process, drops privileges, sets environment, and execs
-//! the authd-dialog binary which shows a secure session-lock confirmation.
+//! Spawns authd-dialog with dropped privileges to show a secure
+//! session-lock confirmation dialog.
 
-use authd_protocol::CallerInfo;
+use authd_protocol::{CallerInfo, wayland_env};
 use std::collections::HashMap;
-use std::ffi::CString;
+use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
+use std::process::Command;
 
 /// Result of showing the confirmation dialog
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -16,87 +17,21 @@ pub enum DialogResult {
     Error,
 }
 
-/// Show a confirmation dialog in a forked child process
+/// Show a confirmation dialog by spawning authd-dialog
 ///
-/// The child drops privileges to the caller's UID/GID, sets Wayland env vars,
-/// execs authd-dialog which locks the session and shows confirmation dialog.
+/// Spawns authd-dialog with the caller's UID/GID and Wayland env vars.
+/// The dialog locks the session and shows a confirmation prompt.
 pub fn show_confirmation_dialog(
     caller: &CallerInfo,
     target: &PathBuf,
     args: &[String],
     env: &HashMap<String, String>,
 ) -> DialogResult {
-    let pid = unsafe { libc::fork() };
-
-    match pid {
-        -1 => {
-            tracing::error!("fork failed");
-            DialogResult::Error
-        }
-        0 => {
-            // Child process
-            run_dialog_child(caller, target, args, env);
-        }
-        child_pid => {
-            // Parent: wait for child
-            let mut status: libc::c_int = 0;
-            let result = unsafe { libc::waitpid(child_pid, &mut status, 0) };
-
-            if result == -1 {
-                tracing::error!("waitpid failed");
-                return DialogResult::Error;
-            }
-
-            if libc::WIFEXITED(status) {
-                let exit_code = libc::WEXITSTATUS(status);
-                if exit_code == 0 {
-                    DialogResult::Confirmed
-                } else {
-                    DialogResult::Denied
-                }
-            } else {
-                DialogResult::Error
-            }
-        }
-    }
-}
-
-fn run_dialog_child(
-    caller: &CallerInfo,
-    target: &PathBuf,
-    args: &[String],
-    env: &HashMap<String, String>,
-) -> ! {
-    // Start new session
-    unsafe { libc::setsid() };
-
-    // Set Wayland environment variables
-    // SAFETY: forked child, no other threads
-    for (key, val) in env {
-        unsafe { std::env::set_var(key, val) };
-    }
-
-    // Set HOME to user's home directory (for shader cache etc)
-    let home = format!("/home/{}", get_username(caller.uid).unwrap_or_else(|| "nobody".into()));
-    unsafe { std::env::set_var("HOME", &home) };
-    unsafe { std::env::set_var("USER", get_username(caller.uid).unwrap_or_else(|| "nobody".into())) };
-
-    // Drop privileges (GID first, then UID)
-    unsafe {
-        if libc::setgid(caller.gid) != 0 {
-            eprintln!("authd: setgid({}) failed", caller.gid);
-            std::process::exit(1);
-        }
-        if libc::setuid(caller.uid) != 0 {
-            eprintln!("authd: setuid({}) failed", caller.uid);
-            std::process::exit(1);
-        }
-    }
-
-    // Find authd-dialog binary (same directory as authd)
+    // Find authd-dialog binary (same directory as authd, or /usr/bin)
     let dialog_bin = std::env::current_exe()
         .ok()
         .and_then(|p| p.parent().map(|d| d.join("authd-dialog")))
+        .filter(|p| p.exists())
         .unwrap_or_else(|| PathBuf::from("/usr/bin/authd-dialog"));
 
     // Build command string for dialog
@@ -106,22 +41,38 @@ fn run_dialog_child(
         format!("{} {}", target.display(), args.join(" "))
     };
 
-    // Exec the dialog binary
-    let c_prog = CString::new(dialog_bin.to_string_lossy().as_bytes()).unwrap();
-    let c_arg0 = c_prog.clone();
-    let c_arg1 = CString::new(command.as_bytes()).unwrap();
-    let c_args: Vec<*const libc::c_char> = vec![
-        c_arg0.as_ptr(),
-        c_arg1.as_ptr(),
-        std::ptr::null(),
-    ];
+    // Get username and home directory
+    let username = get_username(caller.uid).unwrap_or_else(|| "nobody".into());
+    let home = format!("/home/{}", username);
 
-    unsafe {
-        libc::execv(c_prog.as_ptr(), c_args.as_ptr());
+    // Spawn authd-dialog with dropped privileges
+    let result = Command::new(&dialog_bin)
+        .arg(&command)
+        .uid(caller.uid)
+        .gid(caller.gid)
+        .env("HOME", &home)
+        .env("USER", &username)
+        .envs(
+            // Only pass known safe Wayland env vars, not arbitrary client data
+            wayland_env()
+                .iter()
+                .filter_map(|&key| env.get(key).map(|val| (key, val)))
+        )
+        .status();
+
+    match result {
+        Ok(status) => {
+            if status.success() {
+                DialogResult::Confirmed
+            } else {
+                DialogResult::Denied
+            }
+        }
+        Err(e) => {
+            tracing::error!("failed to spawn authd-dialog: {}", e);
+            DialogResult::Error
+        }
     }
-
-    eprintln!("authd: exec {:?} failed: {}", dialog_bin, std::io::Error::last_os_error());
-    std::process::exit(1);
 }
 
 fn get_username(uid: u32) -> Option<String> {
