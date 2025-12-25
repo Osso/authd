@@ -4,7 +4,7 @@
 //! 1. Gets the real UID of the caller
 //! 2. Checks policies
 //! 3. Authenticates if required (or requests confirmation via authd)
-//! 4. exec() the target command
+//! 4. exec() the target command as root or specified user (-u)
 
 use authd_policy::{username_from_uid, CallerInfo, PolicyDecision, PolicyEngine};
 use authd_protocol::{AuthRequest, AuthResponse, SOCKET_PATH, wayland_env};
@@ -20,6 +20,56 @@ use std::process::{self, Command};
 /// Arguments that bypass auth (harmless info commands)
 const BYPASS_ARGS: &[&str] = &["--help", "-h", "--version", "-V"];
 
+/// Target user for command execution
+struct TargetUser {
+    uid: u32,
+    gid: u32,
+    name: Option<String>,
+}
+
+impl TargetUser {
+    fn root() -> Self {
+        Self { uid: 0, gid: 0, name: Some("root".to_string()) }
+    }
+
+    fn from_spec(spec: &str) -> Option<Self> {
+        // Support #uid format
+        if let Some(uid_str) = spec.strip_prefix('#') {
+            let uid: u32 = uid_str.parse().ok()?;
+            // Get primary group and name for this UID
+            unsafe {
+                let pwd = libc::getpwuid(uid);
+                if pwd.is_null() {
+                    // No passwd entry, use uid as gid, no name
+                    return Some(Self { uid, gid: uid, name: None });
+                }
+                let name = std::ffi::CStr::from_ptr((*pwd).pw_name)
+                    .to_string_lossy()
+                    .into_owned();
+                return Some(Self {
+                    uid,
+                    gid: (*pwd).pw_gid,
+                    name: Some(name),
+                });
+            }
+        }
+
+        // Username lookup
+        unsafe {
+            let c_name = std::ffi::CString::new(spec).ok()?;
+            let pwd = libc::getpwnam(c_name.as_ptr());
+            if pwd.is_null() {
+                return None;
+            }
+            Some(Self {
+                uid: (*pwd).pw_uid,
+                gid: (*pwd).pw_gid,
+                name: Some(spec.to_string()),
+            })
+        }
+    }
+}
+
 fn main() {
     // Get real UID (who invoked us, not effective UID which is root)
     let real_uid = unsafe { libc::getuid() };
@@ -27,7 +77,15 @@ fn main() {
     // Parse arguments
     let args: Vec<String> = env::args().skip(1).collect();
     if args.is_empty() {
-        eprintln!("usage: authsudo <command> [args...]");
+        eprintln!("usage: authsudo [-u user] <command> [args...]");
+        process::exit(1);
+    }
+
+    // Parse -u flag
+    let (target_user, args) = parse_user_flag(&args);
+
+    if args.is_empty() {
+        eprintln!("usage: authsudo [-u user] <command> [args...]");
         process::exit(1);
     }
 
@@ -100,11 +158,18 @@ fn main() {
         }
     }
 
-    // Drop back to root (we're setuid root, effective UID is already 0)
-    // Set real UID to 0 as well for the exec
+    // Set target user (we're setuid root, so we can switch to any user)
+    // Order matters: initgroups/setgid before setuid (can't change groups after dropping root)
     unsafe {
-        libc::setgid(0);
-        libc::setuid(0);
+        if let Some(ref name) = target_user.name {
+            let c_name = std::ffi::CString::new(name.as_str()).unwrap();
+            libc::initgroups(c_name.as_ptr(), target_user.gid);
+        } else {
+            // No username available, just clear supplementary groups
+            libc::setgroups(0, std::ptr::null());
+        }
+        libc::setgid(target_user.gid);
+        libc::setuid(target_user.uid);
     }
 
     // exec the target - this replaces our process
@@ -295,4 +360,44 @@ fn authenticate_user(username: &str) -> bool {
         .set_credentials(username, &password);
 
     client.authenticate().is_ok()
+}
+
+/// Parse -u/--user flag from arguments
+fn parse_user_flag(args: &[String]) -> (TargetUser, Vec<String>) {
+    let mut iter = args.iter().peekable();
+    let mut target_user = TargetUser::root();
+    let mut remaining = Vec::new();
+
+    while let Some(arg) = iter.next() {
+        if arg == "-u" || arg == "--user" {
+            if let Some(user_spec) = iter.next() {
+                match TargetUser::from_spec(user_spec) {
+                    Some(user) => target_user = user,
+                    None => {
+                        eprintln!("authsudo: unknown user: {}", user_spec);
+                        process::exit(1);
+                    }
+                }
+            } else {
+                eprintln!("authsudo: -u requires an argument");
+                process::exit(1);
+            }
+        } else if let Some(user_spec) = arg.strip_prefix("-u") {
+            // Handle -uUSER format (no space)
+            match TargetUser::from_spec(user_spec) {
+                Some(user) => target_user = user,
+                None => {
+                    eprintln!("authsudo: unknown user: {}", user_spec);
+                    process::exit(1);
+                }
+            }
+        } else {
+            // First non-flag argument starts the command
+            remaining.push(arg.clone());
+            remaining.extend(iter.cloned());
+            break;
+        }
+    }
+
+    (target_user, remaining)
 }
