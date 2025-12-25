@@ -90,20 +90,20 @@ impl App {
     fn view(&self, _id: Id) -> Element<'_, Message> {
         let command = TARGET_COMMAND.get().map(|s| s.as_str()).unwrap_or("unknown");
 
-        let title = text("Authorization Required").size(24);
-        let command_text = text(command).size(16);
+        let title = text("Authorization Required").size(48);
+        let command_text = text(command).size(32);
 
         let theme = ayu_dark_theme();
         let actions = row![
-            text("[Enter] Allow").size(16).color(theme.palette().success),
-            text("[Esc] Cancel").size(16).color(theme.palette().danger),
+            text("[Enter] Allow").size(32).color(theme.palette().success),
+            text("[Esc] Cancel").size(32).color(theme.palette().danger),
         ]
         .spacing(30);
 
         let content = column![
             title,
             horizontal_rule(1),
-            text("An application wants to run as root:").size(14),
+            text("An application wants to run as root:").size(28),
             command_text,
             actions,
         ]
