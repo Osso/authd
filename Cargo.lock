@@ -317,6 +317,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "authd-escalate"
+version = "0.1.0"
+dependencies = [
+ "nix",
+]
+
+[[package]]
 name = "authd-policy"
 version = "0.1.0"
 dependencies = [
