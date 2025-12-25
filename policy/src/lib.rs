@@ -29,6 +29,14 @@ pub enum PolicyDecision {
     Unknown,
 }
 
+/// Caller info for policy checking
+#[derive(Debug, Clone)]
+pub struct CallerInfo<'a> {
+    pub exe: &'a Path,
+    /// Full resolved path of cmdline arg0 (for scripts run via interpreters)
+    pub cmdline_path: Option<&'a Path>,
+}
+
 #[derive(Debug, Default)]
 pub struct PolicyEngine {
     rules: HashMap<PathBuf, Vec<PolicyRule>>,
@@ -112,8 +120,17 @@ impl PolicyEngine {
         self.check_with_caller(target, uid, None)
     }
 
-    /// Check with caller info
+    /// Check with caller info (single caller, for backwards compatibility)
     pub fn check_with_caller(&self, target: &Path, uid: u32, caller_exe: Option<&Path>) -> PolicyDecision {
+        let callers: Vec<CallerInfo> = caller_exe
+            .into_iter()
+            .map(|exe| CallerInfo { exe, cmdline_path: None })
+            .collect();
+        self.check_with_callers(target, uid, &callers)
+    }
+
+    /// Check with multiple callers (ancestor chain with exe and cmdline)
+    pub fn check_with_callers(&self, target: &Path, uid: u32, callers: &[CallerInfo]) -> PolicyDecision {
         // Collect matching rules: exact match first, then wildcard
         let mut matching_rules: Vec<&PolicyRule> = Vec::new();
 
@@ -144,8 +161,22 @@ impl PolicyEngine {
                 .iter()
                 .any(|g| user_in_group(uid, g));
 
-            let caller_allowed = caller_exe
-                .is_some_and(|c| rule.allow_callers.iter().any(|ac| ac == c));
+            // Check if any ancestor is a trusted caller
+            let caller_allowed = callers.iter().any(|caller| {
+                rule.allow_callers.iter().any(|allowed| {
+                    // Match exact exe path
+                    if caller.exe == allowed {
+                        return true;
+                    }
+                    // Match resolved cmdline path (for scripts run via interpreters)
+                    if let Some(cmdline_path) = caller.cmdline_path {
+                        if cmdline_path == allowed {
+                            return true;
+                        }
+                    }
+                    false
+                })
+            });
 
             if user_allowed || group_allowed || caller_allowed {
                 // Early return for None (can't do better)

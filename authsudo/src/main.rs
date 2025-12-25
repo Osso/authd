@@ -6,7 +6,7 @@
 //! 3. Authenticates if required (or requests confirmation via authd)
 //! 4. exec() the target command
 
-use authd_policy::{username_from_uid, PolicyDecision, PolicyEngine};
+use authd_policy::{username_from_uid, CallerInfo, PolicyDecision, PolicyEngine};
 use authd_protocol::{AuthRequest, AuthResponse, SOCKET_PATH, wayland_env};
 use pam::Client;
 use std::collections::HashMap;
@@ -16,6 +16,9 @@ use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{self, Command};
+
+/// Arguments that bypass auth (harmless info commands)
+const BYPASS_ARGS: &[&str] = &["--help", "-h", "--version", "-V"];
 
 fn main() {
     // Get real UID (who invoked us, not effective UID which is root)
@@ -31,6 +34,9 @@ fn main() {
     let target = PathBuf::from(&args[0]);
     let target_args: Vec<&str> = args.iter().skip(1).map(|s| s.as_str()).collect();
 
+    // Check for bypass args (--help, --version, etc.)
+    let has_bypass_arg = target_args.iter().any(|a| BYPASS_ARGS.contains(a));
+
     // Resolve to absolute path
     let target = resolve_path(&target).unwrap_or_else(|| {
         eprintln!("authsudo: command not found: {}", args[0]);
@@ -44,11 +50,24 @@ fn main() {
         process::exit(1);
     }
 
-    // Get caller (parent process) for trusted caller bypass
-    let caller_exe = get_caller_exe();
+    // Get caller ancestors for trusted caller bypass
+    let caller_info = get_caller_info();
+    let callers: Vec<CallerInfo> = caller_info
+        .iter()
+        .map(|c| CallerInfo {
+            exe: c.exe.as_path(),
+            cmdline_path: c.cmdline_path.as_deref(),
+        })
+        .collect();
 
-    // Check policy
-    match engine.check_with_caller(&target, real_uid, caller_exe.as_deref()) {
+    // Check policy (skip if bypass arg present)
+    let decision = if has_bypass_arg {
+        PolicyDecision::AllowImmediate
+    } else {
+        engine.check_with_callers(&target, real_uid, &callers)
+    };
+
+    match decision {
         PolicyDecision::AllowImmediate => {
             // Allowed without any interaction
         }
@@ -96,10 +115,93 @@ fn main() {
     process::exit(126);
 }
 
-/// Get the caller's executable path (parent process)
-fn get_caller_exe() -> Option<PathBuf> {
-    let ppid = unsafe { libc::getppid() };
-    std::fs::read_link(format!("/proc/{}/exe", ppid)).ok()
+/// Info about a caller process (local version with owned data)
+struct ProcessInfo {
+    exe: PathBuf,
+    /// Resolved path of cmdline arg0 (for scripts run via interpreters)
+    cmdline_path: Option<PathBuf>,
+}
+
+/// Resolve cmdline arg0 to a canonical path
+fn resolve_cmdline_path(arg0: &str, pid: i32) -> Option<PathBuf> {
+    if arg0.is_empty() {
+        return None;
+    }
+
+    let path = Path::new(arg0);
+
+    // If absolute, canonicalize directly
+    if path.is_absolute() {
+        return std::fs::canonicalize(path).ok();
+    }
+
+    // Get process's PATH from its environment
+    let environ = std::fs::read(format!("/proc/{}/environ", pid)).ok()?;
+    let path_var = environ
+        .split(|&b| b == 0)
+        .find_map(|entry| {
+            let entry = String::from_utf8_lossy(entry);
+            entry.strip_prefix("PATH=").map(|p| p.to_string())
+        })?;
+
+    // Search PATH for the command
+    for dir in path_var.split(':') {
+        let full = PathBuf::from(dir).join(arg0);
+        if let Ok(resolved) = std::fs::canonicalize(&full) {
+            return Some(resolved);
+        }
+    }
+
+    None
+}
+
+/// Get caller info (walk up process tree to find trusted callers)
+fn get_caller_info() -> Vec<ProcessInfo> {
+    let mut callers = Vec::new();
+    let mut pid = unsafe { libc::getppid() } as i32;
+
+    // Walk up to 10 ancestors (avoid infinite loops)
+    for _ in 0..10 {
+        if pid <= 1 {
+            break;
+        }
+
+        let exe = std::fs::read_link(format!("/proc/{}/exe", pid)).unwrap_or_default();
+
+        // Get cmdline arg0 and resolve to full path (for scripts run via interpreter)
+        let cmdline_path = std::fs::read(format!("/proc/{}/cmdline", pid))
+            .ok()
+            .and_then(|bytes| {
+                bytes.split(|&b| b == 0).next().and_then(|arg0| {
+                    let arg0_str = String::from_utf8_lossy(arg0);
+                    resolve_cmdline_path(&arg0_str, pid)
+                })
+            });
+
+        if !exe.as_os_str().is_empty() || cmdline_path.is_some() {
+            callers.push(ProcessInfo { exe, cmdline_path });
+        }
+
+        // Get parent's parent
+        let stat_path = format!("/proc/{}/stat", pid);
+        if let Ok(stat) = std::fs::read_to_string(&stat_path) {
+            // Format: pid (comm) state ppid ...
+            // Find the closing paren then split
+            if let Some(paren_end) = stat.rfind(')') {
+                let rest = &stat[paren_end + 2..]; // skip ") "
+                let fields: Vec<&str> = rest.split_whitespace().collect();
+                if let Some(ppid_str) = fields.get(1) { // state is [0], ppid is [1]
+                    if let Ok(ppid) = ppid_str.parse::<i32>() {
+                        pid = ppid;
+                        continue;
+                    }
+                }
+            }
+        }
+        break;
+    }
+
+    callers
 }
 
 /// Resolve a command to its absolute path
