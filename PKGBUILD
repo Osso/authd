@@ -22,7 +22,6 @@ package() {
 
     # Binaries
     install -Dm755 target/release/authd "$pkgdir/usr/bin/authd"
-    install -Dm755 target/release/authd-dialog "$pkgdir/usr/bin/authd-dialog"
     install -Dm755 target/release/authctl "$pkgdir/usr/bin/authctl"
     install -Dm755 target/release/pkexec "$pkgdir/usr/bin/authd-pkexec"
 
