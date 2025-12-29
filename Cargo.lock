@@ -114,8 +114,7 @@ name = "authctl"
 version = "0.1.0"
 dependencies = [
  "authd-protocol",
- "rmp-serde",
- "serde",
+ "unix-ipc",
 ]
 
 [[package]]
@@ -125,14 +124,11 @@ dependencies = [
  "anyhow",
  "authd-policy",
  "authd-protocol",
- "libc",
- "rmp-serde",
- "serde",
  "session-dialog",
- "thiserror 2.0.17",
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "unix-ipc",
 ]
 
 [[package]]
@@ -171,8 +167,8 @@ dependencies = [
  "authd-protocol",
  "libc",
  "pam",
- "rmp-serde",
  "rpassword",
+ "unix-ipc",
 ]
 
 [[package]]
@@ -2954,6 +2950,17 @@ name = "unicode-width"
 version = "0.1.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7dd6e30e90baa6f72411720665d41d89b9a3d039dc45b8faea1ddd07f617f6af"
+
+[[package]]
+name = "unix-ipc"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "rmp-serde",
+ "serde",
+ "thiserror 2.0.17",
+ "tokio",
+]
 
 [[package]]
 name = "users"

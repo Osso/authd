@@ -8,14 +8,13 @@
 
 use authd_policy::{username_from_uid, CallerInfo, PolicyDecision, PolicyEngine};
 use authd_protocol::{AuthRequest, AuthResponse, SOCKET_PATH, wayland_env};
-use pam::Client;
+use pam::Client as PamClient;
 use std::collections::HashMap;
 use std::env;
-use std::io::{Read, Write};
-use std::os::unix::net::UnixStream;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{self, Command};
+use unix_ipc::Client as IpcClient;
 
 /// Arguments that bypass auth (harmless info commands)
 const BYPASS_ARGS: &[&str] = &["--help", "-h", "--version", "-V"];
@@ -301,33 +300,14 @@ fn request_confirmation(target: &Path, args: &[&str]) -> bool {
         confirm_only: true,
     };
 
-    let mut stream = match UnixStream::connect(SOCKET_PATH) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("authsudo: cannot connect to authd: {}", e);
-            return false;
-        }
-    };
-
-    let data = match rmp_serde::to_vec(&request) {
-        Ok(d) => d,
-        Err(_) => return false,
-    };
-
-    if stream.write_all(&data).is_err() {
-        return false;
-    }
-
-    let mut buf = vec![0u8; 4096];
-    let n = match stream.read(&mut buf) {
-        Ok(n) => n,
-        Err(_) => return false,
-    };
-
-    match rmp_serde::from_slice::<AuthResponse>(&buf[..n]) {
+    match IpcClient::call(SOCKET_PATH, &request) {
         Ok(AuthResponse::Success { .. }) => true,
         Ok(AuthResponse::Denied { reason }) => {
             eprintln!("authsudo: {}", reason);
+            false
+        }
+        Err(e) => {
+            eprintln!("authsudo: cannot connect to authd: {}", e);
             false
         }
         _ => false,
@@ -351,7 +331,7 @@ fn authenticate_user(username: &str) -> bool {
     };
 
     // PAM authentication
-    let Ok(mut client) = Client::with_password("authd") else {
+    let Ok(mut client) = PamClient::with_password("authd") else {
         return false;
     };
 

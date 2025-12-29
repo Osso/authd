@@ -6,10 +6,9 @@
 use authd_protocol::{AuthRequest, AuthResponse, SOCKET_PATH, wayland_env};
 use std::collections::HashMap;
 use std::env;
-use std::io::{Read, Write};
-use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 use std::process;
+use unix_ipc::Client;
 
 fn main() {
     let args: Vec<String> = env::args().skip(1).collect();
@@ -70,14 +69,5 @@ fn collect_wayland_env() -> HashMap<String, String> {
 }
 
 fn send_request(request: &AuthRequest) -> Result<AuthResponse, String> {
-    let mut stream = UnixStream::connect(SOCKET_PATH)
-        .map_err(|e| format!("connect: {}", e))?;
-
-    let data = rmp_serde::to_vec(request).map_err(|e| format!("serialize: {}", e))?;
-    stream.write_all(&data).map_err(|e| format!("write: {}", e))?;
-
-    let mut buf = vec![0u8; 4096];
-    let n = stream.read(&mut buf).map_err(|e| format!("read: {}", e))?;
-
-    rmp_serde::from_slice(&buf[..n]).map_err(|e| format!("deserialize: {}", e))
+    Client::call(SOCKET_PATH, request).map_err(|e| e.to_string())
 }

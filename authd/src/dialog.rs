@@ -2,7 +2,7 @@
 //!
 //! Shows a secure session-lock confirmation dialog via the session-dialog crate.
 
-use authd_protocol::CallerInfo;
+use unix_ipc::CallerInfo;
 use session_dialog::{DialogConfig, DialogKind, DialogResult as SdResult};
 use std::collections::HashMap;
 use std::path::PathBuf;
