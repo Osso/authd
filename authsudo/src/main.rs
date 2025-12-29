@@ -277,7 +277,18 @@ fn resolve_path(cmd: &Path) -> Option<PathBuf> {
         return None;
     }
 
-    // Search PATH
+    // Relative path (contains / but not absolute) - resolve against cwd
+    if cmd.components().count() > 1 {
+        if let Ok(cwd) = env::current_dir() {
+            let full = cwd.join(cmd);
+            if full.exists() {
+                return std::fs::canonicalize(&full).ok();
+            }
+        }
+        return None;
+    }
+
+    // Search PATH for simple command names
     if let Ok(path_var) = env::var("PATH") {
         for dir in path_var.split(':') {
             let full = PathBuf::from(dir).join(cmd);
