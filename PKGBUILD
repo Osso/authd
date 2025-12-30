@@ -1,24 +1,24 @@
 # Maintainer: Alessio Deiana <adeiana@gmail.com>
 pkgname=authd
-pkgver=0.1.0
+pkgver=0.2.0
 pkgrel=1
 pkgdesc="Privilege escalation daemon for Wayland (polkit replacement)"
 arch=('x86_64')
 url="https://github.com/adeiana/authd"
 license=('MIT')
 depends=('systemd')
-makedepends=('cargo' 'musl')
+makedepends=('cargo')
 install=authd.install
 source=()
 
 build() {
     cd "$startdir"
-    cargo build --release --locked --target x86_64-unknown-linux-musl
+    cargo build --release --locked
 }
 
 package() {
     cd "$startdir"
-    local _target=target/x86_64-unknown-linux-musl/release
+    local _target=target/release
 
     # Binaries
     install -Dm755 "$_target/authd" "$pkgdir/usr/bin/authd"
