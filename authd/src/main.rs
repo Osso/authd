@@ -122,12 +122,6 @@ async fn process_request(
                 }
             }
         }
-        PolicyDecision::RequireAuth => {
-            // Password auth not supported via GUI - use authsudo instead
-            return AuthResponse::Error {
-                message: "Password auth requires terminal. Use: authsudo".into(),
-            };
-        }
     }
 
     // If confirm_only, don't spawn - just return success

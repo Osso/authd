@@ -21,8 +21,6 @@ pub enum PolicyDecision {
     AllowImmediate,
     /// Show confirmation dialog
     AllowWithConfirm,
-    /// Require password authentication
-    RequireAuth,
     /// Denied by policy
     Denied(String),
     /// No matching policy
@@ -204,8 +202,9 @@ impl PolicyEngine {
 
         match best_auth {
             Some(AuthRequirement::None) => PolicyDecision::AllowImmediate,
-            Some(AuthRequirement::Confirm) => PolicyDecision::AllowWithConfirm,
-            Some(AuthRequirement::Password) => PolicyDecision::RequireAuth,
+            Some(AuthRequirement::Confirm | AuthRequirement::Password) => {
+                PolicyDecision::AllowWithConfirm
+            }
             Some(AuthRequirement::Deny) => PolicyDecision::Denied("target denied by policy".into()),
             None => PolicyDecision::Denied("user not authorized".into()),
         }
@@ -389,8 +388,9 @@ mod tests {
             cache_timeout: 300,
         });
 
+        // Password now treated same as Confirm
         let decision = engine.check(Path::new("/usr/bin/usertest"), uid);
-        assert!(matches!(decision, PolicyDecision::RequireAuth));
+        assert!(matches!(decision, PolicyDecision::AllowWithConfirm));
     }
 
     #[test]

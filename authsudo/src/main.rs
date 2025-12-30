@@ -142,13 +142,6 @@ fn main() {
                 process::exit(1);
             }
         }
-        PolicyDecision::RequireAuth => {
-            // RequireAuth now treated same as AllowWithConfirm (session-lock dialog)
-            if !request_confirmation(&target, &target_args) {
-                eprintln!("authsudo: authorization denied");
-                process::exit(1);
-            }
-        }
         PolicyDecision::Denied(reason) => {
             eprintln!("authsudo: {}", reason);
             process::exit(1);
