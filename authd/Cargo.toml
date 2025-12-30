@@ -13,4 +13,4 @@ tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 anyhow = "1"
-session-dialog = { path = "/home/osso/Projects/lib/session-dialog" }
+session-dialog = { git = "https://github.com/Osso/session-dialog" }
