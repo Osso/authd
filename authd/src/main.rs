@@ -2,10 +2,10 @@ mod dialog;
 
 use authd_policy::{PolicyDecision, PolicyEngine};
 use authd_protocol::{AuthRequest, AuthResponse, SOCKET_PATH};
-use dialog::{show_confirmation_dialog, DialogResult};
+use dialog::{DialogResult, show_confirmation_dialog};
+use peercred_ipc::{CallerInfo, Connection, Server};
 use std::sync::Arc;
 use tracing::{error, info};
-use peercred_ipc::{CallerInfo, Connection, Server};
 
 struct AppState {
     policy: PolicyEngine,
@@ -40,15 +40,20 @@ async fn main() -> anyhow::Result<()> {
 }
 
 async fn handle_connection(mut conn: Connection, caller: CallerInfo, state: Arc<AppState>) {
-    info!("connection from uid={} pid={} exe={:?}", caller.uid, caller.pid, caller.exe);
+    info!(
+        "connection from uid={} pid={} exe={:?}",
+        caller.uid, caller.pid, caller.exe
+    );
 
     let request: AuthRequest = match conn.read().await {
         Ok(r) => r,
         Err(e) => {
             error!("{}", e);
-            let _ = conn.write(&AuthResponse::Error {
-                message: "invalid request".into()
-            }).await;
+            let _ = conn
+                .write(&AuthResponse::Error {
+                    message: "invalid request".into(),
+                })
+                .await;
             return;
         }
     };
@@ -57,7 +62,11 @@ async fn handle_connection(mut conn: Connection, caller: CallerInfo, state: Arc<
     let _ = conn.write(&response).await;
 }
 
-async fn process_request(caller: &CallerInfo, request: &AuthRequest, state: &AppState) -> AuthResponse {
+async fn process_request(
+    caller: &CallerInfo,
+    request: &AuthRequest,
+    state: &AppState,
+) -> AuthResponse {
     info!("auth request: target={:?}", request.target);
 
     // If confirm_only from authsudo, skip policy check (authsudo already validated with real uid)
@@ -79,7 +88,9 @@ async fn process_request(caller: &CallerInfo, request: &AuthRequest, state: &App
     }
 
     // Check policy (pass caller exe for trusted caller bypass)
-    let decision = state.policy.check_with_caller(&request.target, caller.uid, Some(&caller.exe));
+    let decision = state
+        .policy
+        .check_with_caller(&request.target, caller.uid, Some(&caller.exe));
 
     match decision {
         PolicyDecision::Unknown => {
@@ -93,7 +104,8 @@ async fn process_request(caller: &CallerInfo, request: &AuthRequest, state: &App
         }
         PolicyDecision::AllowWithConfirm => {
             // Show confirmation dialog (fork, drop privs, run GUI)
-            let result = show_confirmation_dialog(caller, &request.target, &request.args, &request.env);
+            let result =
+                show_confirmation_dialog(caller, &request.target, &request.args, &request.env);
             match result {
                 DialogResult::Confirmed => {
                     info!("user confirmed");

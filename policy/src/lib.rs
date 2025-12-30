@@ -98,11 +98,10 @@ impl PolicyEngine {
 
     fn load_file(&mut self, path: &Path) -> Result<usize, PolicyError> {
         let content = fs::read_to_string(path)?;
-        let config: PolicyFile =
-            toml::from_str(&content).map_err(|e| PolicyError::Parse {
-                file: path.to_path_buf(),
-                error: e.to_string(),
-            })?;
+        let config: PolicyFile = toml::from_str(&content).map_err(|e| PolicyError::Parse {
+            file: path.to_path_buf(),
+            error: e.to_string(),
+        })?;
 
         let count = config.rules.len();
         for rule in config.rules {
@@ -121,16 +120,29 @@ impl PolicyEngine {
     }
 
     /// Check with caller info (single caller, for backwards compatibility)
-    pub fn check_with_caller(&self, target: &Path, uid: u32, caller_exe: Option<&Path>) -> PolicyDecision {
+    pub fn check_with_caller(
+        &self,
+        target: &Path,
+        uid: u32,
+        caller_exe: Option<&Path>,
+    ) -> PolicyDecision {
         let callers: Vec<CallerInfo> = caller_exe
             .into_iter()
-            .map(|exe| CallerInfo { exe, cmdline_path: None })
+            .map(|exe| CallerInfo {
+                exe,
+                cmdline_path: None,
+            })
             .collect();
         self.check_with_callers(target, uid, &callers)
     }
 
     /// Check with multiple callers (ancestor chain with exe and cmdline)
-    pub fn check_with_callers(&self, target: &Path, uid: u32, callers: &[CallerInfo]) -> PolicyDecision {
+    pub fn check_with_callers(
+        &self,
+        target: &Path,
+        uid: u32,
+        callers: &[CallerInfo],
+    ) -> PolicyDecision {
         // Collect matching rules: exact match first, then wildcard
         let mut matching_rules: Vec<&PolicyRule> = Vec::new();
 
@@ -156,10 +168,7 @@ impl PolicyEngine {
                 .as_ref()
                 .is_some_and(|u| rule.allow_users.contains(u));
 
-            let group_allowed = rule
-                .allow_groups
-                .iter()
-                .any(|g| user_in_group(uid, g));
+            let group_allowed = rule.allow_groups.iter().any(|g| user_in_group(uid, g));
 
             // Check if any ancestor is a trusted caller
             let caller_allowed = callers.iter().any(|caller| {
@@ -185,7 +194,8 @@ impl PolicyEngine {
                 }
 
                 // Track best auth seen
-                let dominated = best_auth.is_some_and(|best| auth_priority(&rule.auth) >= auth_priority(best));
+                let dominated =
+                    best_auth.is_some_and(|best| auth_priority(&rule.auth) >= auth_priority(best));
                 if !dominated {
                     best_auth = Some(&rule.auth);
                 }

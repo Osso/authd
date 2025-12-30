@@ -4,11 +4,11 @@
 //! authd handles all UI (session-lock dialog).
 
 use authd_protocol::{AuthRequest, AuthResponse, SOCKET_PATH, wayland_env};
+use peercred_ipc::Client;
 use std::collections::HashMap;
 use std::env;
 use std::path::PathBuf;
 use std::process;
-use peercred_ipc::Client;
 
 fn main() {
     let args: Vec<String> = env::args().skip(1).collect();

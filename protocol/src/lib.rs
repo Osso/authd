@@ -138,9 +138,13 @@ mod tests {
         let responses = vec![
             AuthResponse::Success { pid: 12345 },
             AuthResponse::AuthFailed,
-            AuthResponse::Denied { reason: "not allowed".into() },
+            AuthResponse::Denied {
+                reason: "not allowed".into(),
+            },
             AuthResponse::UnknownTarget,
-            AuthResponse::Error { message: "something went wrong".into() },
+            AuthResponse::Error {
+                message: "something went wrong".into(),
+            },
         ];
 
         for response in responses {
@@ -185,19 +189,27 @@ mod tests {
     #[test]
     fn auth_requirement_variants() {
         assert!(matches!(
-            toml::from_str::<PolicyRule>("target = \"/bin/x\"\nauth = \"none\"").unwrap().auth,
+            toml::from_str::<PolicyRule>("target = \"/bin/x\"\nauth = \"none\"")
+                .unwrap()
+                .auth,
             AuthRequirement::None
         ));
         assert!(matches!(
-            toml::from_str::<PolicyRule>("target = \"/bin/x\"\nauth = \"confirm\"").unwrap().auth,
+            toml::from_str::<PolicyRule>("target = \"/bin/x\"\nauth = \"confirm\"")
+                .unwrap()
+                .auth,
             AuthRequirement::Confirm
         ));
         assert!(matches!(
-            toml::from_str::<PolicyRule>("target = \"/bin/x\"\nauth = \"password\"").unwrap().auth,
+            toml::from_str::<PolicyRule>("target = \"/bin/x\"\nauth = \"password\"")
+                .unwrap()
+                .auth,
             AuthRequirement::Password
         ));
         assert!(matches!(
-            toml::from_str::<PolicyRule>("target = \"/bin/x\"\nauth = \"deny\"").unwrap().auth,
+            toml::from_str::<PolicyRule>("target = \"/bin/x\"\nauth = \"deny\"")
+                .unwrap()
+                .auth,
             AuthRequirement::Deny
         ));
     }

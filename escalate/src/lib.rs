@@ -37,7 +37,10 @@ impl std::fmt::Display for Error {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Error::AuthsudoNotFound => {
-                write!(f, "This operation requires elevated privileges. Install authsudo or run with sudo.")
+                write!(
+                    f,
+                    "This operation requires elevated privileges. Install authsudo or run with sudo."
+                )
             }
             Error::ExecFailed(e) => write!(f, "Failed to exec authsudo: {}", e),
             Error::UserNotFound(name) => write!(f, "User not found: {}", name),

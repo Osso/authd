@@ -39,9 +39,7 @@ fn main() {
     }
 
     // Launch authctl with the target
-    let status = Command::new("authctl")
-        .args(&cmd_args)
-        .status();
+    let status = Command::new("authctl").args(&cmd_args).status();
 
     match status {
         Ok(s) => std::process::exit(s.code().unwrap_or(1)),

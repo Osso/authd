@@ -6,15 +6,15 @@
 //! 3. Authenticates if required (or requests confirmation via authd)
 //! 4. exec() the target command as root or specified user (-u)
 
-use authd_policy::{username_from_uid, CallerInfo, PolicyDecision, PolicyEngine};
+use authd_policy::{CallerInfo, PolicyDecision, PolicyEngine, username_from_uid};
 use authd_protocol::{AuthRequest, AuthResponse, SOCKET_PATH, wayland_env};
 use pam::Client as PamClient;
+use peercred_ipc::Client as IpcClient;
 use std::collections::HashMap;
 use std::env;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{self, Command};
-use peercred_ipc::Client as IpcClient;
 
 /// Arguments that bypass auth (harmless info commands)
 const BYPASS_ARGS: &[&str] = &["--help", "-h", "--version", "-V"];
@@ -28,7 +28,11 @@ struct TargetUser {
 
 impl TargetUser {
     fn root() -> Self {
-        Self { uid: 0, gid: 0, name: Some("root".to_string()) }
+        Self {
+            uid: 0,
+            gid: 0,
+            name: Some("root".to_string()),
+        }
     }
 
     fn from_spec(spec: &str) -> Option<Self> {
@@ -40,7 +44,11 @@ impl TargetUser {
                 let pwd = libc::getpwuid(uid);
                 if pwd.is_null() {
                     // No passwd entry, use uid as gid, no name
-                    return Some(Self { uid, gid: uid, name: None });
+                    return Some(Self {
+                        uid,
+                        gid: uid,
+                        name: None,
+                    });
                 }
                 let name = std::ffi::CStr::from_ptr((*pwd).pw_name)
                     .to_string_lossy()
@@ -201,12 +209,10 @@ fn resolve_cmdline_path(arg0: &str, pid: i32) -> Option<PathBuf> {
 
     // Get process's PATH from its environment
     let environ = std::fs::read(format!("/proc/{}/environ", pid)).ok()?;
-    let path_var = environ
-        .split(|&b| b == 0)
-        .find_map(|entry| {
-            let entry = String::from_utf8_lossy(entry);
-            entry.strip_prefix("PATH=").map(|p| p.to_string())
-        })?;
+    let path_var = environ.split(|&b| b == 0).find_map(|entry| {
+        let entry = String::from_utf8_lossy(entry);
+        entry.strip_prefix("PATH=").map(|p| p.to_string())
+    })?;
 
     // Search PATH for the command
     for dir in path_var.split(':') {
@@ -254,7 +260,8 @@ fn get_caller_info() -> Vec<ProcessInfo> {
             if let Some(paren_end) = stat.rfind(')') {
                 let rest = &stat[paren_end + 2..]; // skip ") "
                 let fields: Vec<&str> = rest.split_whitespace().collect();
-                if let Some(ppid_str) = fields.get(1) { // state is [0], ppid is [1]
+                if let Some(ppid_str) = fields.get(1) {
+                    // state is [0], ppid is [1]
                     if let Ok(ppid) = ppid_str.parse::<i32>() {
                         pid = ppid;
                         continue;
@@ -336,10 +343,11 @@ fn collect_wayland_env() -> HashMap<String, String> {
 /// Authenticate user via PAM
 fn authenticate_user(username: &str) -> bool {
     // Read password from terminal
-    let password = match rpassword::prompt_password(format!("[authsudo] password for {}: ", username)) {
-        Ok(p) => p,
-        Err(_) => return false,
-    };
+    let password =
+        match rpassword::prompt_password(format!("[authsudo] password for {}: ", username)) {
+            Ok(p) => p,
+            Err(_) => return false,
+        };
 
     // PAM authentication
     let Ok(mut client) = PamClient::with_password("authd") else {
