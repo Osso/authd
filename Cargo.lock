@@ -114,7 +114,7 @@ name = "authctl"
 version = "0.1.0"
 dependencies = [
  "authd-protocol",
- "unix-ipc",
+ "peercred-ipc",
 ]
 
 [[package]]
@@ -124,11 +124,11 @@ dependencies = [
  "anyhow",
  "authd-policy",
  "authd-protocol",
+ "peercred-ipc",
  "session-dialog",
  "tokio",
  "tracing",
  "tracing-subscriber",
- "unix-ipc",
 ]
 
 [[package]]
@@ -167,8 +167,8 @@ dependencies = [
  "authd-protocol",
  "libc",
  "pam",
+ "peercred-ipc",
  "rpassword",
- "unix-ipc",
 ]
 
 [[package]]
@@ -1982,6 +1982,18 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
 
 [[package]]
+name = "peercred-ipc"
+version = "0.1.0"
+source = "git+https://github.com/Osso/peercred-ipc#7ee9ae26aed0313cd793ddfc51e0996cf15038e9"
+dependencies = [
+ "libc",
+ "rmp-serde",
+ "serde",
+ "thiserror 2.0.17",
+ "tokio",
+]
+
+[[package]]
 name = "pin-project"
 version = "1.1.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2950,17 +2962,6 @@ name = "unicode-width"
 version = "0.1.14"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7dd6e30e90baa6f72411720665d41d89b9a3d039dc45b8faea1ddd07f617f6af"
-
-[[package]]
-name = "unix-ipc"
-version = "0.1.0"
-dependencies = [
- "libc",
- "rmp-serde",
- "serde",
- "thiserror 2.0.17",
- "tokio",
-]
 
 [[package]]
 name = "users"

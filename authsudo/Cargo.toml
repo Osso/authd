@@ -10,7 +10,7 @@ path = "src/main.rs"
 [dependencies]
 authd-policy = { path = "../policy" }
 authd-protocol = { path = "../protocol" }
-unix-ipc = { path = "../../unix-ipc" }
+peercred-ipc = { git = "https://github.com/Osso/peercred-ipc" }
 libc = "0.2"
 pam = "0.8"
 rpassword = "7"

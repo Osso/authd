@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::env;
 use std::path::PathBuf;
 use std::process;
-use unix_ipc::Client;
+use peercred_ipc::Client;
 
 fn main() {
     let args: Vec<String> = env::args().skip(1).collect();

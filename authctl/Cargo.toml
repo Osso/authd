@@ -7,7 +7,7 @@ authors.workspace = true
 
 [dependencies]
 authd-protocol.workspace = true
-unix-ipc.workspace = true
+peercred-ipc.workspace = true
 
 [[bin]]
 name = "authctl"

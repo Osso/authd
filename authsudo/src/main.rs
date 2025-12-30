@@ -14,7 +14,7 @@ use std::env;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{self, Command};
-use unix_ipc::Client as IpcClient;
+use peercred_ipc::Client as IpcClient;
 
 /// Arguments that bypass auth (harmless info commands)
 const BYPASS_ARGS: &[&str] = &["--help", "-h", "--version", "-V"];

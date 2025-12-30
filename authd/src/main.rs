@@ -5,7 +5,7 @@ use authd_protocol::{AuthRequest, AuthResponse, SOCKET_PATH};
 use dialog::{show_confirmation_dialog, DialogResult};
 use std::sync::Arc;
 use tracing::{error, info};
-use unix_ipc::{CallerInfo, Connection, Server};
+use peercred_ipc::{CallerInfo, Connection, Server};
 
 struct AppState {
     policy: PolicyEngine,
