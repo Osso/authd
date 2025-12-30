@@ -6,9 +6,8 @@
 //! 3. Authenticates if required (or requests confirmation via authd)
 //! 4. exec() the target command as root or specified user (-u)
 
-use authd_policy::{CallerInfo, PolicyDecision, PolicyEngine, username_from_uid};
+use authd_policy::{CallerInfo, PolicyDecision, PolicyEngine};
 use authd_protocol::{AuthRequest, AuthResponse, SOCKET_PATH, wayland_env};
-use pam::Client as PamClient;
 use peercred_ipc::Client as IpcClient;
 use std::collections::HashMap;
 use std::env;
@@ -144,14 +143,9 @@ fn main() {
             }
         }
         PolicyDecision::RequireAuth => {
-            // Need password authentication
-            let username = username_from_uid(real_uid).unwrap_or_else(|| {
-                eprintln!("authsudo: unknown user");
-                process::exit(1);
-            });
-
-            if !authenticate_user(&username) {
-                eprintln!("authsudo: authentication failed");
+            // RequireAuth now treated same as AllowWithConfirm (session-lock dialog)
+            if !request_confirmation(&target, &target_args) {
+                eprintln!("authsudo: authorization denied");
                 process::exit(1);
             }
         }
@@ -338,27 +332,6 @@ fn collect_wayland_env() -> HashMap<String, String> {
         .into_iter()
         .filter_map(|key| env::var(key).ok().map(|val| (key.to_string(), val)))
         .collect()
-}
-
-/// Authenticate user via PAM
-fn authenticate_user(username: &str) -> bool {
-    // Read password from terminal
-    let password =
-        match rpassword::prompt_password(format!("[authsudo] password for {}: ", username)) {
-            Ok(p) => p,
-            Err(_) => return false,
-        };
-
-    // PAM authentication
-    let Ok(mut client) = PamClient::with_password("authd") else {
-        return false;
-    };
-
-    client
-        .conversation_mut()
-        .set_credentials(username, &password);
-
-    client.authenticate().is_ok()
 }
 
 /// Parse -u/--user flag from arguments

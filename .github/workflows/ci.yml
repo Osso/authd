@@ -18,32 +18,23 @@ jobs:
       - name: Install system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libpam0g-dev libwayland-dev libxkbcommon-dev libclang-dev
+          sudo apt-get install -y libwayland-dev libxkbcommon-dev musl-tools
 
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
           targets: x86_64-unknown-linux-musl
 
-      - name: Install musl tools
-        run: sudo apt-get install -y musl-tools
-
       - uses: Swatinem/rust-cache@v2
 
       - name: Check formatting
         run: cargo fmt --check
 
-      - name: Clippy (musl)
-        run: cargo clippy -p authd -p authctl -p authd-policy -p authd-protocol -p authd-escalate
+      - name: Clippy
+        run: cargo clippy --workspace
 
-      - name: Clippy (glibc - authsudo)
-        run: cargo clippy -p authsudo --target x86_64-unknown-linux-gnu
-
-      - name: Build static binaries (musl)
-        run: cargo build --release -p authd -p authctl
-
-      - name: Build authsudo (glibc - requires PAM)
-        run: cargo build --release -p authsudo --target x86_64-unknown-linux-gnu
+      - name: Build
+        run: cargo build --workspace --release
 
       - name: Run tests
-        run: cargo test --workspace --target x86_64-unknown-linux-gnu
+        run: cargo test --workspace
