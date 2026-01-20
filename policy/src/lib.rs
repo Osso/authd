@@ -1,4 +1,5 @@
 use authd_protocol::{AuthRequirement, PolicyRule};
+use glob::Pattern;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -171,17 +172,10 @@ impl PolicyEngine {
             // Check if any ancestor is a trusted caller
             let caller_allowed = callers.iter().any(|caller| {
                 rule.allow_callers.iter().any(|allowed| {
-                    // Match exact exe path
-                    if caller.exe == allowed {
-                        return true;
-                    }
-                    // Match resolved cmdline path (for scripts run via interpreters)
-                    if let Some(cmdline_path) = caller.cmdline_path {
-                        if cmdline_path == allowed {
-                            return true;
-                        }
-                    }
-                    false
+                    path_matches_pattern(caller.exe, allowed)
+                        || caller
+                            .cmdline_path
+                            .is_some_and(|p| path_matches_pattern(p, allowed))
                 })
             });
 
@@ -218,6 +212,22 @@ fn auth_priority(auth: &AuthRequirement) -> u8 {
         AuthRequirement::Password => 2,
         AuthRequirement::Deny => 3,
     }
+}
+
+/// Check if a path matches a pattern (exact match or glob pattern)
+fn path_matches_pattern(path: &Path, pattern: &Path) -> bool {
+    // Exact match
+    if path == pattern {
+        return true;
+    }
+    // Glob pattern match (only if pattern contains glob chars)
+    let pattern_str = pattern.to_string_lossy();
+    if pattern_str.contains('*') || pattern_str.contains('?') || pattern_str.contains('[') {
+        if let Ok(glob) = Pattern::new(&pattern_str) {
+            return glob.matches_path(path);
+        }
+    }
+    false
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -552,5 +562,78 @@ mod tests {
             Some(Path::new("/usr/bin/claude")),
         );
         assert!(matches!(decision, PolicyDecision::AllowImmediate));
+    }
+
+    #[test]
+    fn caller_glob_pattern() {
+        let mut engine = PolicyEngine::new();
+        let uid = users::get_current_uid();
+
+        // Allow any version of claude using glob pattern
+        engine.add_rule(PolicyRule {
+            target: PathBuf::from("*"),
+            allow_users: vec![],
+            allow_groups: vec![],
+            allow_callers: vec![PathBuf::from(
+                "/home/osso/.local/share/claude/versions/*",
+            )],
+            auth: AuthRequirement::None,
+            cache_timeout: 300,
+        });
+
+        // Version 2.1.12 matches
+        let decision = engine.check_with_caller(
+            Path::new("/usr/bin/anything"),
+            uid,
+            Some(Path::new(
+                "/home/osso/.local/share/claude/versions/2.1.12",
+            )),
+        );
+        assert!(matches!(decision, PolicyDecision::AllowImmediate));
+
+        // Version 3.0.0 also matches
+        let decision = engine.check_with_caller(
+            Path::new("/usr/bin/anything"),
+            uid,
+            Some(Path::new(
+                "/home/osso/.local/share/claude/versions/3.0.0",
+            )),
+        );
+        assert!(matches!(decision, PolicyDecision::AllowImmediate));
+
+        // Different path doesn't match
+        let decision = engine.check_with_caller(
+            Path::new("/usr/bin/anything"),
+            uid,
+            Some(Path::new("/usr/bin/other")),
+        );
+        assert!(matches!(decision, PolicyDecision::Denied(_)));
+    }
+
+    #[test]
+    fn path_matches_pattern_unit() {
+        // Exact match
+        assert!(path_matches_pattern(
+            Path::new("/usr/bin/claude"),
+            Path::new("/usr/bin/claude")
+        ));
+
+        // Glob with *
+        assert!(path_matches_pattern(
+            Path::new("/home/user/versions/2.1.12"),
+            Path::new("/home/user/versions/*")
+        ));
+
+        // Glob doesn't match different prefix
+        assert!(!path_matches_pattern(
+            Path::new("/other/path/2.1.12"),
+            Path::new("/home/user/versions/*")
+        ));
+
+        // No match
+        assert!(!path_matches_pattern(
+            Path::new("/usr/bin/other"),
+            Path::new("/usr/bin/claude")
+        ));
     }
 }

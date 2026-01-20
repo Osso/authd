@@ -14,8 +14,18 @@ fn main() {
     let args: Vec<String> = env::args().skip(1).collect();
 
     if args.is_empty() {
-        eprintln!("usage: authctl <command> [args...]");
+        print_help();
         process::exit(1);
+    }
+
+    if args[0] == "--help" || args[0] == "-h" {
+        print_help();
+        process::exit(0);
+    }
+
+    if args[0] == "--version" || args[0] == "-V" {
+        println!("authctl {}", env!("CARGO_PKG_VERSION"));
+        process::exit(0);
     }
 
     let target = PathBuf::from(&args[0]);
@@ -59,6 +69,19 @@ fn main() {
             process::exit(1);
         }
     }
+}
+
+fn print_help() {
+    eprintln!("authctl - privilege escalation client for authd");
+    eprintln!();
+    eprintln!("Usage: authctl <command> [args...]");
+    eprintln!();
+    eprintln!("Sends authorization requests to authd daemon.");
+    eprintln!("If authorized, the command runs as root.");
+    eprintln!();
+    eprintln!("Options:");
+    eprintln!("  -h, --help     Show this help");
+    eprintln!("  -V, --version  Show version");
 }
 
 fn collect_wayland_env() -> HashMap<String, String> {
