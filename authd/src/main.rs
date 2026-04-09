@@ -68,71 +68,68 @@ async fn process_request(
     state: &AppState,
 ) -> AuthResponse {
     info!("auth request: target={:?}", request.target);
-
-    // If confirm_only from authsudo, skip policy check (authsudo already validated with real uid)
-    let is_authsudo = caller.exe.ends_with("authsudo");
-    if request.confirm_only && is_authsudo {
-        let result = show_confirmation_dialog(caller, &request.target, &request.args, &request.env);
-        return match result {
-            DialogResult::Confirmed => {
-                info!("user confirmed");
-                AuthResponse::Success { pid: 0 }
-            }
-            DialogResult::Denied => AuthResponse::Denied {
-                reason: "user cancelled".into(),
-            },
-            DialogResult::Error => AuthResponse::Error {
-                message: "failed to show confirmation dialog".into(),
-            },
-        };
+    if request.confirm_only && caller.exe.ends_with("authsudo") {
+        return confirmation_response(caller, request);
     }
 
-    // Check policy (pass caller exe for trusted caller bypass)
+    match policy_response(caller, request, state) {
+        Some(response) => return response,
+        None => {}
+    }
+
+    if request.confirm_only {
+        return AuthResponse::Success { pid: 0 };
+    }
+
+    match spawn_process(request).await {
+        Ok(pid) => AuthResponse::Success { pid },
+        Err(e) => AuthResponse::Error { message: e },
+    }
+}
+
+fn policy_response(
+    caller: &CallerInfo,
+    request: &AuthRequest,
+    state: &AppState,
+) -> Option<AuthResponse> {
     let decision = state
         .policy
         .check_with_caller(&request.target, caller.uid, Some(&caller.exe));
 
     match decision {
-        PolicyDecision::Unknown => {
-            return AuthResponse::UnknownTarget;
-        }
-        PolicyDecision::Denied(reason) => {
-            return AuthResponse::Denied { reason };
-        }
-        PolicyDecision::AllowImmediate => {
-            // No interaction needed, proceed directly
-        }
-        PolicyDecision::AllowWithConfirm => {
-            // Show confirmation dialog (fork, drop privs, run GUI)
-            let result =
-                show_confirmation_dialog(caller, &request.target, &request.args, &request.env);
-            match result {
-                DialogResult::Confirmed => {
-                    info!("user confirmed");
-                }
-                DialogResult::Denied => {
-                    return AuthResponse::Denied {
-                        reason: "user cancelled".into(),
-                    };
-                }
-                DialogResult::Error => {
-                    return AuthResponse::Error {
-                        message: "failed to show confirmation dialog".into(),
-                    };
-                }
-            }
-        }
+        PolicyDecision::Unknown => Some(AuthResponse::UnknownTarget),
+        PolicyDecision::Denied(reason) => Some(AuthResponse::Denied { reason }),
+        PolicyDecision::AllowImmediate => None,
+        PolicyDecision::AllowWithConfirm => confirmation_response(caller, request).into_error(),
     }
+}
 
-    // If confirm_only, don't spawn - just return success
-    if request.confirm_only {
-        return AuthResponse::Success { pid: 0 };
+fn confirmation_response(caller: &CallerInfo, request: &AuthRequest) -> AuthResponse {
+    let result = show_confirmation_dialog(caller, &request.target, &request.args, &request.env);
+    match result {
+        DialogResult::Confirmed => {
+            info!("user confirmed");
+            AuthResponse::Success { pid: 0 }
+        }
+        DialogResult::Denied => AuthResponse::Denied {
+            reason: "user cancelled".into(),
+        },
+        DialogResult::Error => AuthResponse::Error {
+            message: "failed to show confirmation dialog".into(),
+        },
     }
+}
 
-    // Spawn process via systemd-run
-    match spawn_process(request).await {
-        Ok(pid) => AuthResponse::Success { pid },
-        Err(e) => AuthResponse::Error { message: e },
+trait ConfirmationOutcome {
+    fn into_error(self) -> Option<AuthResponse>;
+}
+
+impl ConfirmationOutcome for AuthResponse {
+    fn into_error(self) -> Option<AuthResponse> {
+        match self {
+            AuthResponse::Success { .. } => None,
+            other => Some(other),
+        }
     }
 }
 

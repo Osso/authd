@@ -3,72 +3,17 @@
 //! Sends authorization requests to authd daemon.
 //! authd handles all UI (session-lock dialog).
 
-use authd_protocol::{AuthRequest, AuthResponse, SOCKET_PATH, wayland_env};
+use authd_protocol::{AuthRequest, AuthResponse, SOCKET_PATH, collect_wayland_env};
 use peercred_ipc::Client;
-use std::collections::HashMap;
 use std::env;
 use std::path::PathBuf;
 use std::process;
 
 fn main() {
-    let args: Vec<String> = env::args().skip(1).collect();
-
-    if args.is_empty() {
-        print_help();
-        process::exit(1);
-    }
-
-    if args[0] == "--help" || args[0] == "-h" {
-        print_help();
-        process::exit(0);
-    }
-
-    if args[0] == "--version" || args[0] == "-V" {
-        println!("authctl {}", env!("CARGO_PKG_VERSION"));
-        process::exit(0);
-    }
-
-    let target = PathBuf::from(&args[0]);
-    let target_args: Vec<String> = args.iter().skip(1).cloned().collect();
-
-    let request = AuthRequest {
-        target,
-        args: target_args,
-        env: collect_wayland_env(),
-        password: String::new(),
-        confirm_only: false,
-    };
-
-    match send_request(&request) {
-        Ok(AuthResponse::Success { pid }) => {
-            eprintln!("authctl: process spawned (pid {})", pid);
-            process::exit(0);
-        }
-        Ok(AuthResponse::Denied { reason }) => {
-            eprintln!("authctl: denied - {}", reason);
-            process::exit(1);
-        }
-        Ok(AuthResponse::UnknownTarget) => {
-            eprintln!("authctl: no policy for this command");
-            process::exit(1);
-        }
-        Ok(AuthResponse::AuthFailed) => {
-            eprintln!("authctl: authentication failed");
-            process::exit(1);
-        }
-        Ok(AuthResponse::Error { message }) => {
-            eprintln!("authctl: error - {}", message);
-            process::exit(1);
-        }
-        Err(e) => {
-            if e.contains("connect") {
-                eprintln!("authctl: daemon not running");
-            } else {
-                eprintln!("authctl: {}", e);
-            }
-            process::exit(1);
-        }
-    }
+    let args = cli_args();
+    handle_meta_args(&args);
+    let request = build_request(&args);
+    exit_with_response(send_request(&request));
 }
 
 fn print_help() {
@@ -84,11 +29,57 @@ fn print_help() {
     eprintln!("  -V, --version  Show version");
 }
 
-fn collect_wayland_env() -> HashMap<String, String> {
-    wayland_env()
-        .into_iter()
-        .filter_map(|key| env::var(key).ok().map(|val| (key.to_string(), val)))
-        .collect()
+fn cli_args() -> Vec<String> {
+    let args: Vec<String> = env::args().skip(1).collect();
+    if args.is_empty() {
+        print_help();
+        process::exit(1);
+    }
+    args
+}
+
+fn handle_meta_args(args: &[String]) {
+    match args.first().map(String::as_str) {
+        Some("--help" | "-h") => {
+            print_help();
+            process::exit(0);
+        }
+        Some("--version" | "-V") => {
+            println!("authctl {}", env!("CARGO_PKG_VERSION"));
+            process::exit(0);
+        }
+        _ => {}
+    }
+}
+
+fn build_request(args: &[String]) -> AuthRequest {
+    AuthRequest {
+        target: PathBuf::from(&args[0]),
+        args: args.iter().skip(1).cloned().collect(),
+        env: collect_wayland_env(),
+        password: String::new(),
+        confirm_only: false,
+    }
+}
+
+fn exit_with_response(response: Result<AuthResponse, String>) -> ! {
+    match response {
+        Ok(AuthResponse::Success { pid }) => {
+            eprintln!("authctl: process spawned (pid {})", pid);
+            process::exit(0);
+        }
+        Ok(AuthResponse::Denied { reason }) => exit_with_error(&format!("denied - {}", reason)),
+        Ok(AuthResponse::UnknownTarget) => exit_with_error("no policy for this command"),
+        Ok(AuthResponse::AuthFailed) => exit_with_error("authentication failed"),
+        Ok(AuthResponse::Error { message }) => exit_with_error(&format!("error - {}", message)),
+        Err(error) if error.contains("connect") => exit_with_error("daemon not running"),
+        Err(error) => exit_with_error(&error),
+    }
+}
+
+fn exit_with_error(message: &str) -> ! {
+    eprintln!("authctl: {}", message);
+    process::exit(1)
 }
 
 fn send_request(request: &AuthRequest) -> Result<AuthResponse, String> {

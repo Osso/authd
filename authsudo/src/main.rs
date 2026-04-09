@@ -7,9 +7,8 @@
 //! 4. exec() the target command as root or specified user (-u)
 
 use authd_policy::{CallerInfo, PolicyDecision, PolicyEngine};
-use authd_protocol::{AuthRequest, AuthResponse, SOCKET_PATH, wayland_env};
+use authd_protocol::{AuthRequest, AuthResponse, SOCKET_PATH, collect_wayland_env};
 use peercred_ipc::Client as IpcClient;
-use std::collections::HashMap;
 use std::env;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -23,6 +22,13 @@ struct TargetUser {
     uid: u32,
     gid: u32,
     name: Option<String>,
+}
+
+struct Invocation {
+    target_user: TargetUser,
+    target: PathBuf,
+    target_args: Vec<String>,
+    has_bypass_arg: bool,
 }
 
 impl TargetUser {
@@ -77,101 +83,14 @@ impl TargetUser {
 }
 
 fn main() {
-    // Get real UID (who invoked us, not effective UID which is root)
     let real_uid = unsafe { libc::getuid() };
-
-    // Parse arguments
-    let args: Vec<String> = env::args().skip(1).collect();
-    if args.is_empty() {
-        eprintln!("usage: authsudo [-u user] <command> [args...]");
-        process::exit(1);
-    }
-
-    // Parse -u flag
-    let (target_user, args) = parse_user_flag(&args);
-
-    if args.is_empty() {
-        eprintln!("usage: authsudo [-u user] <command> [args...]");
-        process::exit(1);
-    }
-
-    let target = PathBuf::from(&args[0]);
-    let target_args: Vec<&str> = args.iter().skip(1).map(|s| s.as_str()).collect();
-
-    // Check for bypass args (--help, --version, etc.)
-    let has_bypass_arg = target_args.iter().any(|a| BYPASS_ARGS.contains(a));
-
-    // Resolve to absolute path
-    let target = resolve_path(&target).unwrap_or_else(|| {
-        eprintln!("authsudo: command not found: {}", args[0]);
-        process::exit(127);
-    });
-
-    // Load policies
-    let mut engine = PolicyEngine::new();
-    if let Err(e) = engine.load() {
-        eprintln!("authsudo: failed to load policies: {}", e);
-        process::exit(1);
-    }
-
-    // Get caller ancestors for trusted caller bypass
+    let invocation = parse_invocation();
+    let engine = load_policy_engine();
     let caller_info = get_caller_info();
-    let callers: Vec<CallerInfo> = caller_info
-        .iter()
-        .map(|c| CallerInfo {
-            exe: c.exe.as_path(),
-            cmdline_path: c.cmdline_path.as_deref(),
-        })
-        .collect();
-
-    // Check policy (skip if bypass arg present)
-    let decision = if has_bypass_arg {
-        PolicyDecision::AllowImmediate
-    } else {
-        engine.check_with_callers(&target, real_uid, &callers)
-    };
-
-    match decision {
-        PolicyDecision::AllowImmediate => {
-            // Allowed without any interaction
-        }
-        PolicyDecision::AllowWithConfirm => {
-            // Request confirmation from authd (shows session-lock dialog)
-            if !request_confirmation(&target, &target_args) {
-                eprintln!("authsudo: authorization denied");
-                process::exit(1);
-            }
-        }
-        PolicyDecision::Denied(reason) => {
-            eprintln!("authsudo: {}", reason);
-            process::exit(1);
-        }
-        PolicyDecision::Unknown => {
-            eprintln!("authsudo: no policy for {}", target.display());
-            process::exit(1);
-        }
-    }
-
-    // Set target user (we're setuid root, so we can switch to any user)
-    // Order matters: initgroups/setgid before setuid (can't change groups after dropping root)
-    unsafe {
-        if let Some(ref name) = target_user.name {
-            let c_name = std::ffi::CString::new(name.as_str()).unwrap();
-            libc::initgroups(c_name.as_ptr(), target_user.gid);
-        } else {
-            // No username available, just clear supplementary groups
-            libc::setgroups(0, std::ptr::null());
-        }
-        libc::setgid(target_user.gid);
-        libc::setuid(target_user.uid);
-    }
-
-    // exec the target - this replaces our process
-    let err = Command::new(&target).args(&target_args).exec();
-
-    // If we get here, exec failed
-    eprintln!("authsudo: failed to execute {}: {}", target.display(), err);
-    process::exit(126);
+    let callers = policy_callers(&caller_info);
+    enforce_policy(&engine, &invocation, real_uid, &callers);
+    switch_to_target_user(&invocation.target_user);
+    exec_target(&invocation.target, &invocation.target_args);
 }
 
 /// Info about a caller process (local version with owned data)
@@ -216,49 +135,18 @@ fn resolve_cmdline_path(arg0: &str, pid: i32) -> Option<PathBuf> {
 fn get_caller_info() -> Vec<ProcessInfo> {
     let mut callers = Vec::new();
     let mut pid = unsafe { libc::getppid() } as i32;
-
-    // Walk up to 10 ancestors (avoid infinite loops)
     for _ in 0..10 {
         if pid <= 1 {
             break;
         }
-
-        let exe = std::fs::read_link(format!("/proc/{}/exe", pid)).unwrap_or_default();
-
-        // Get cmdline arg0 and resolve to full path (for scripts run via interpreter)
-        let cmdline_path = std::fs::read(format!("/proc/{}/cmdline", pid))
-            .ok()
-            .and_then(|bytes| {
-                bytes.split(|&b| b == 0).next().and_then(|arg0| {
-                    let arg0_str = String::from_utf8_lossy(arg0);
-                    resolve_cmdline_path(&arg0_str, pid)
-                })
-            });
-
-        if !exe.as_os_str().is_empty() || cmdline_path.is_some() {
-            callers.push(ProcessInfo { exe, cmdline_path });
+        if let Some(caller) = caller_entry(pid) {
+            callers.push(caller);
         }
-
-        // Get parent's parent
-        let stat_path = format!("/proc/{}/stat", pid);
-        if let Ok(stat) = std::fs::read_to_string(&stat_path) {
-            // Format: pid (comm) state ppid ...
-            // Find the closing paren then split
-            if let Some(paren_end) = stat.rfind(')') {
-                let rest = &stat[paren_end + 2..]; // skip ") "
-                let fields: Vec<&str> = rest.split_whitespace().collect();
-                if let Some(ppid_str) = fields.get(1) {
-                    // state is [0], ppid is [1]
-                    if let Ok(ppid) = ppid_str.parse::<i32>() {
-                        pid = ppid;
-                        continue;
-                    }
-                }
-            }
-        }
-        break;
+        let Some(parent_pid) = parent_pid(pid) else {
+            break;
+        };
+        pid = parent_pid;
     }
-
     callers
 }
 
@@ -296,10 +184,10 @@ fn resolve_path(cmd: &Path) -> Option<PathBuf> {
 }
 
 /// Request confirmation from authd via session-lock dialog
-fn request_confirmation(target: &Path, args: &[&str]) -> bool {
+fn request_confirmation(target: &Path, args: &[String]) -> bool {
     let request = AuthRequest {
         target: target.to_path_buf(),
-        args: args.iter().map(|s| s.to_string()).collect(),
+        args: args.to_vec(),
         env: collect_wayland_env(),
         password: String::new(),
         confirm_only: true,
@@ -319,14 +207,6 @@ fn request_confirmation(target: &Path, args: &[&str]) -> bool {
     }
 }
 
-/// Collect Wayland environment variables
-fn collect_wayland_env() -> HashMap<String, String> {
-    wayland_env()
-        .into_iter()
-        .filter_map(|key| env::var(key).ok().map(|val| (key.to_string(), val)))
-        .collect()
-}
-
 /// Parse -u/--user flag from arguments
 fn parse_user_flag(args: &[String]) -> (TargetUser, Vec<String>) {
     let mut iter = args.iter().peekable();
@@ -335,34 +215,162 @@ fn parse_user_flag(args: &[String]) -> (TargetUser, Vec<String>) {
 
     while let Some(arg) = iter.next() {
         if arg == "-u" || arg == "--user" {
-            if let Some(user_spec) = iter.next() {
-                match TargetUser::from_spec(user_spec) {
-                    Some(user) => target_user = user,
-                    None => {
-                        eprintln!("authsudo: unknown user: {}", user_spec);
-                        process::exit(1);
-                    }
-                }
-            } else {
-                eprintln!("authsudo: -u requires an argument");
-                process::exit(1);
-            }
-        } else if let Some(user_spec) = arg.strip_prefix("-u") {
-            // Handle -uUSER format (no space)
-            match TargetUser::from_spec(user_spec) {
-                Some(user) => target_user = user,
-                None => {
-                    eprintln!("authsudo: unknown user: {}", user_spec);
-                    process::exit(1);
-                }
-            }
-        } else {
-            // First non-flag argument starts the command
-            remaining.push(arg.clone());
-            remaining.extend(iter.cloned());
-            break;
+            let user_spec = iter.next().unwrap_or_else(|| missing_user_argument());
+            target_user = parse_target_user(user_spec);
+            continue;
         }
+
+        if let Some(user_spec) = arg.strip_prefix("-u") {
+            target_user = parse_target_user(user_spec);
+            continue;
+        }
+
+        remaining.push(arg.clone());
+        remaining.extend(iter.cloned());
+        break;
     }
 
     (target_user, remaining)
+}
+
+fn parse_invocation() -> Invocation {
+    let args: Vec<String> = env::args().skip(1).collect();
+    if args.is_empty() {
+        eprintln!("usage: authsudo [-u user] <command> [args...]");
+        process::exit(1);
+    }
+
+    let (target_user, args) = parse_user_flag(&args);
+    if args.is_empty() {
+        eprintln!("usage: authsudo [-u user] <command> [args...]");
+        process::exit(1);
+    }
+
+    let target_args: Vec<String> = args.iter().skip(1).cloned().collect();
+    let target = resolve_path(Path::new(&args[0])).unwrap_or_else(|| {
+        eprintln!("authsudo: command not found: {}", args[0]);
+        process::exit(127);
+    });
+
+    Invocation {
+        target_user,
+        target,
+        has_bypass_arg: target_args
+            .iter()
+            .any(|arg| BYPASS_ARGS.contains(&arg.as_str())),
+        target_args,
+    }
+}
+
+fn load_policy_engine() -> PolicyEngine {
+    let mut engine = PolicyEngine::new();
+    if let Err(error) = engine.load() {
+        eprintln!("authsudo: failed to load policies: {}", error);
+        process::exit(1);
+    }
+    engine
+}
+
+fn policy_callers(callers: &[ProcessInfo]) -> Vec<CallerInfo<'_>> {
+    callers
+        .iter()
+        .map(|caller| CallerInfo {
+            exe: caller.exe.as_path(),
+            cmdline_path: caller.cmdline_path.as_deref(),
+        })
+        .collect()
+}
+
+fn enforce_policy(
+    engine: &PolicyEngine,
+    invocation: &Invocation,
+    real_uid: u32,
+    callers: &[CallerInfo<'_>],
+) {
+    let decision = if invocation.has_bypass_arg {
+        PolicyDecision::AllowImmediate
+    } else {
+        engine.check_with_callers(&invocation.target, real_uid, callers)
+    };
+
+    match decision {
+        PolicyDecision::AllowImmediate => {}
+        PolicyDecision::AllowWithConfirm => {
+            if !request_confirmation(&invocation.target, &invocation.target_args) {
+                eprintln!("authsudo: authorization denied");
+                process::exit(1);
+            }
+        }
+        PolicyDecision::Denied(reason) => {
+            eprintln!("authsudo: {}", reason);
+            process::exit(1);
+        }
+        PolicyDecision::Unknown => {
+            eprintln!("authsudo: no policy for {}", invocation.target.display());
+            process::exit(1);
+        }
+    }
+}
+
+fn switch_to_target_user(target_user: &TargetUser) {
+    unsafe {
+        if let Some(name) = &target_user.name {
+            let c_name = std::ffi::CString::new(name.as_str()).unwrap();
+            libc::initgroups(c_name.as_ptr(), target_user.gid);
+        } else {
+            libc::setgroups(0, std::ptr::null());
+        }
+        libc::setgid(target_user.gid);
+        libc::setuid(target_user.uid);
+    }
+}
+
+fn exec_target(target: &Path, target_args: &[String]) -> ! {
+    let err = Command::new(target).args(target_args).exec();
+    eprintln!("authsudo: failed to execute {}: {}", target.display(), err);
+    process::exit(126)
+}
+
+fn caller_entry(pid: i32) -> Option<ProcessInfo> {
+    let exe = std::fs::read_link(format!("/proc/{}/exe", pid)).unwrap_or_default();
+    let cmdline_path = caller_cmdline_path(pid);
+    if exe.as_os_str().is_empty() && cmdline_path.is_none() {
+        return None;
+    }
+    Some(ProcessInfo { exe, cmdline_path })
+}
+
+fn caller_cmdline_path(pid: i32) -> Option<PathBuf> {
+    std::fs::read(format!("/proc/{}/cmdline", pid))
+        .ok()
+        .and_then(|bytes| {
+            bytes
+                .split(|&byte| byte == 0)
+                .next()
+                .map(|arg0| arg0.to_vec())
+        })
+        .and_then(|arg0| String::from_utf8(arg0).ok())
+        .and_then(|arg0| resolve_cmdline_path(&arg0, pid))
+}
+
+fn parent_pid(pid: i32) -> Option<i32> {
+    let stat = std::fs::read_to_string(format!("/proc/{}/stat", pid)).ok()?;
+    let paren_end = stat.rfind(')')?;
+    let ppid = stat[paren_end + 2..].split_whitespace().nth(1)?;
+    ppid.parse().ok()
+}
+
+fn parse_target_user(spec: &str) -> TargetUser {
+    match TargetUser::from_spec(spec) {
+        Some(user) => user,
+        None => {
+            eprintln!("authsudo: unknown user: {}", spec);
+            process::exit(1);
+        }
+    }
+}
+
+fn missing_user_argument() -> ! {
+    eprintln!("authsudo: -u requires an argument");
+    process::exit(1)
 }

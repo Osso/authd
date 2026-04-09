@@ -142,56 +142,22 @@ impl PolicyEngine {
         uid: u32,
         callers: &[CallerInfo],
     ) -> PolicyDecision {
-        // Collect matching rules: exact match first, then wildcard
-        let mut matching_rules: Vec<&PolicyRule> = Vec::new();
-
-        if let Some(exact_rules) = self.rules.get(target) {
-            matching_rules.extend(exact_rules);
-        }
-        if let Some(wildcard_rules) = self.rules.get(Path::new("*")) {
-            matching_rules.extend(wildcard_rules);
-        }
-
+        let matching_rules = matching_rules(&self.rules, target);
         if matching_rules.is_empty() {
             return PolicyDecision::Unknown;
         }
 
         let username = username_from_uid(uid);
-
-        // Find the least restrictive auth among all matching rules
-        // Priority: None (0) > Confirm (1) > Password (2) > Deny (3)
         let mut best_auth: Option<&AuthRequirement> = None;
 
-        for rule in &matching_rules {
-            let user_allowed = username
-                .as_ref()
-                .is_some_and(|u| rule.allow_users.contains(u));
-
-            let group_allowed = rule.allow_groups.iter().any(|g| user_in_group(uid, g));
-
-            // Check if any ancestor is a trusted caller
-            let caller_allowed = callers.iter().any(|caller| {
-                rule.allow_callers.iter().any(|allowed| {
-                    path_matches_pattern(caller.exe, allowed)
-                        || caller
-                            .cmdline_path
-                            .is_some_and(|p| path_matches_pattern(p, allowed))
-                })
-            });
-
-            if user_allowed || group_allowed || caller_allowed {
-                // Early return for None (can't do better)
-                if matches!(rule.auth, AuthRequirement::None) {
-                    return PolicyDecision::AllowImmediate;
-                }
-
-                // Track best auth seen
-                let dominated =
-                    best_auth.is_some_and(|best| auth_priority(&rule.auth) >= auth_priority(best));
-                if !dominated {
-                    best_auth = Some(&rule.auth);
-                }
+        for rule in matching_rules {
+            if !rule_allows(rule, uid, username.as_deref(), callers) {
+                continue;
             }
+            if matches!(rule.auth, AuthRequirement::None) {
+                return PolicyDecision::AllowImmediate;
+            }
+            update_best_auth(&mut best_auth, &rule.auth);
         }
 
         match best_auth {
@@ -202,6 +168,64 @@ impl PolicyEngine {
             Some(AuthRequirement::Deny) => PolicyDecision::Denied("target denied by policy".into()),
             None => PolicyDecision::Denied("user not authorized".into()),
         }
+    }
+}
+
+fn matching_rules<'a>(
+    rules: &'a HashMap<PathBuf, Vec<PolicyRule>>,
+    target: &Path,
+) -> Vec<&'a PolicyRule> {
+    let mut matches = Vec::new();
+    if let Some(exact_rules) = rules.get(target) {
+        matches.extend(exact_rules);
+    }
+    if let Some(wildcard_rules) = rules.get(Path::new("*")) {
+        matches.extend(wildcard_rules);
+    }
+    matches
+}
+
+fn rule_allows(
+    rule: &PolicyRule,
+    uid: u32,
+    username: Option<&str>,
+    callers: &[CallerInfo],
+) -> bool {
+    user_allowed(rule, username) || group_allowed(rule, uid) || caller_allowed(rule, callers)
+}
+
+fn user_allowed(rule: &PolicyRule, username: Option<&str>) -> bool {
+    username.is_some_and(|username| rule.allow_users.iter().any(|user| user == username))
+}
+
+fn group_allowed(rule: &PolicyRule, uid: u32) -> bool {
+    rule.allow_groups
+        .iter()
+        .any(|group| user_in_group(uid, group))
+}
+
+fn caller_allowed(rule: &PolicyRule, callers: &[CallerInfo]) -> bool {
+    callers
+        .iter()
+        .any(|caller| caller_matches_rule(rule, caller))
+}
+
+fn caller_matches_rule(rule: &PolicyRule, caller: &CallerInfo) -> bool {
+    rule.allow_callers.iter().any(|allowed| {
+        path_matches_pattern(caller.exe, allowed)
+            || caller
+                .cmdline_path
+                .is_some_and(|path| path_matches_pattern(path, allowed))
+    })
+}
+
+fn update_best_auth<'a>(
+    best_auth: &mut Option<&'a AuthRequirement>,
+    candidate: &'a AuthRequirement,
+) {
+    let dominated = best_auth.is_some_and(|best| auth_priority(candidate) >= auth_priority(best));
+    if !dominated {
+        *best_auth = Some(candidate);
     }
 }
 
@@ -574,9 +598,7 @@ mod tests {
             target: PathBuf::from("*"),
             allow_users: vec![],
             allow_groups: vec![],
-            allow_callers: vec![PathBuf::from(
-                "/home/osso/.local/share/claude/versions/*",
-            )],
+            allow_callers: vec![PathBuf::from("/home/osso/.local/share/claude/versions/*")],
             auth: AuthRequirement::None,
             cache_timeout: 300,
         });
@@ -585,9 +607,7 @@ mod tests {
         let decision = engine.check_with_caller(
             Path::new("/usr/bin/anything"),
             uid,
-            Some(Path::new(
-                "/home/osso/.local/share/claude/versions/2.1.12",
-            )),
+            Some(Path::new("/home/osso/.local/share/claude/versions/2.1.12")),
         );
         assert!(matches!(decision, PolicyDecision::AllowImmediate));
 
@@ -595,9 +615,7 @@ mod tests {
         let decision = engine.check_with_caller(
             Path::new("/usr/bin/anything"),
             uid,
-            Some(Path::new(
-                "/home/osso/.local/share/claude/versions/3.0.0",
-            )),
+            Some(Path::new("/home/osso/.local/share/claude/versions/3.0.0")),
         );
         assert!(matches!(decision, PolicyDecision::AllowImmediate));
 

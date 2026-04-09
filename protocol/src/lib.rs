@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::env;
 use std::path::PathBuf;
 
 pub const SOCKET_PATH: &str = "/run/authd.sock";
@@ -109,6 +110,13 @@ pub fn wayland_env() -> Vec<&'static str> {
         "XDG_SESSION_TYPE",
         "DBUS_SESSION_BUS_ADDRESS",
     ]
+}
+
+pub fn collect_wayland_env() -> HashMap<String, String> {
+    wayland_env()
+        .into_iter()
+        .filter_map(|key| env::var(key).ok().map(|value| (key.to_string(), value)))
+        .collect()
 }
 
 #[cfg(test)]
