@@ -2279,7 +2279,7 @@ dependencies = [
 [[package]]
 name = "session-dialog"
 version = "0.1.0"
-source = "git+https://github.com/Osso/session-dialog#2049a572daf0e09cc60fc6c1245e4a8cdfe8bee6"
+source = "git+https://github.com/Osso/session-dialog#5aeadaec5c8c7e3f90dc7491031b4e8322655544"
 dependencies = [
  "iced",
  "iced_sessionlock",

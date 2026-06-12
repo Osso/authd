@@ -1,7 +1,7 @@
 # Maintainer: Alessio Deiana <adeiana@gmail.com>
 pkgname=authd
 pkgver=0.2.0
-pkgrel=1
+pkgrel=2
 pkgdesc="Privilege escalation daemon for Wayland (polkit replacement)"
 arch=('x86_64')
 url="https://github.com/adeiana/authd"
