@@ -9,6 +9,7 @@ authsudo sh -c '
     set -e
     install -m755 target/release/authd /usr/bin/authd
     install -m755 target/release/authctl /usr/bin/authctl
+    install -m755 target/release/authd-polkit-agent /usr/bin/authd-polkit-agent
     install -m755 target/release/pkexec /usr/bin/authd-pkexec
     install -m4755 -o root -g root target/release/authsudo /usr/bin/authsudo
     ln -sf /usr/bin/authd-pkexec /usr/bin/pkexec

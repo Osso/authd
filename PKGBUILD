@@ -1,7 +1,7 @@
 # Maintainer: Alessio Deiana <adeiana@gmail.com>
 pkgname=authd
-pkgver=0.2.0
-pkgrel=2
+pkgver=0.3.0
+pkgrel=1
 pkgdesc="Privilege escalation daemon for Wayland (polkit replacement)"
 arch=('x86_64')
 url="https://github.com/adeiana/authd"
@@ -23,6 +23,7 @@ package() {
     # Binaries
     install -Dm755 "$_target/authd" "$pkgdir/usr/bin/authd"
     install -Dm755 "$_target/authctl" "$pkgdir/usr/bin/authctl"
+    install -Dm755 "$_target/authd-polkit-agent" "$pkgdir/usr/bin/authd-polkit-agent"
     install -Dm755 "$_target/pkexec" "$pkgdir/usr/bin/authd-pkexec"
 
     # authsudo - setuid root for CLI privilege escalation

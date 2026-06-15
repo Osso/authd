@@ -18,6 +18,15 @@ pub struct AuthRequest {
     /// If true, only show confirmation dialog, don't spawn process
     #[serde(default)]
     pub confirm_only: bool,
+    /// Optional dialog title for confirm-only callers.
+    #[serde(default)]
+    pub prompt_title: Option<String>,
+    /// Optional dialog message/subtitle for confirm-only callers.
+    #[serde(default)]
+    pub prompt_message: Option<String>,
+    /// Optional dialog detail text for confirm-only callers.
+    #[serde(default)]
+    pub prompt_detail: Option<String>,
 }
 
 /// Check if user has cached auth (no password needed)
@@ -49,6 +58,43 @@ pub enum AuthResponse {
     /// Target not found in any policy
     UnknownTarget,
     /// Internal daemon error
+    Error { message: String },
+}
+
+/// Top-level request envelope read by authd. Keeps the legacy exec/confirm
+/// flow (`Exec`) and the polkit authentication-agent flow (`Polkit`) on one
+/// socket without overloading `AuthRequest`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum DaemonRequest {
+    /// Legacy authsudo/authctl request: check policy, optionally confirm, spawn.
+    Exec(AuthRequest),
+    /// polkit agent forwarded a `BeginAuthentication`: confirm, then assert.
+    Polkit(PolkitRequest),
+}
+
+/// A polkit `BeginAuthentication` forwarded from `authd-polkit-agent`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PolkitRequest {
+    /// polkit action id, e.g. `org.freedesktop.systemd1.manage-units`.
+    pub action_id: String,
+    /// Human-readable message supplied by polkit, shown in the dialog.
+    pub message: String,
+    /// Opaque cookie identifying this authentication request to polkitd.
+    pub cookie: String,
+    /// uid of the `unix-user` identity to assert on success.
+    pub uid: u32,
+    /// Wayland environment of the agent's session, for the dialog.
+    pub env: HashMap<String, String>,
+}
+
+/// Result of a polkit confirm request.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum PolkitReply {
+    /// User confirmed and authd asserted the response to polkitd.
+    Allowed,
+    /// User declined or the request was denied by policy.
+    Denied,
+    /// authd failed to process the request (dialog/D-Bus error).
     Error { message: String },
 }
 
@@ -124,6 +170,63 @@ mod tests {
     use super::*;
 
     #[test]
+    fn daemon_request_polkit_roundtrip() {
+        let request = DaemonRequest::Polkit(PolkitRequest {
+            action_id: "org.freedesktop.systemd1.manage-units".into(),
+            message: "Authentication is required to stop 'x.service'.".into(),
+            cookie: "2-abc-1-def".into(),
+            uid: 1000,
+            env: HashMap::from([("WAYLAND_DISPLAY".into(), "wayland-1".into())]),
+        });
+
+        let encoded = rmp_serde::to_vec(&request).unwrap();
+        let decoded: DaemonRequest = rmp_serde::from_slice(&encoded).unwrap();
+
+        match decoded {
+            DaemonRequest::Polkit(p) => {
+                assert_eq!(p.action_id, "org.freedesktop.systemd1.manage-units");
+                assert_eq!(p.cookie, "2-abc-1-def");
+                assert_eq!(p.uid, 1000);
+                assert_eq!(p.env.get("WAYLAND_DISPLAY").map(String::as_str), Some("wayland-1"));
+            }
+            other => panic!("expected Polkit, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn daemon_request_exec_roundtrip() {
+        let request = DaemonRequest::Exec(AuthRequest {
+            target: PathBuf::from("/usr/bin/test"),
+            args: vec!["--flag".into()],
+            env: HashMap::new(),
+            password: String::new(),
+            confirm_only: true,
+            prompt_title: None,
+            prompt_message: None,
+            prompt_detail: None,
+        });
+
+        let encoded = rmp_serde::to_vec(&request).unwrap();
+        let decoded: DaemonRequest = rmp_serde::from_slice(&encoded).unwrap();
+        assert!(matches!(decoded, DaemonRequest::Exec(_)));
+    }
+
+    #[test]
+    fn polkit_reply_roundtrip() {
+        for reply in [
+            PolkitReply::Allowed,
+            PolkitReply::Denied,
+            PolkitReply::Error {
+                message: "boom".into(),
+            },
+        ] {
+            let encoded = rmp_serde::to_vec(&reply).unwrap();
+            let decoded: PolkitReply = rmp_serde::from_slice(&encoded).unwrap();
+            assert_eq!(format!("{decoded:?}"), format!("{reply:?}"));
+        }
+    }
+
+    #[test]
     fn auth_request_roundtrip() {
         let request = AuthRequest {
             target: PathBuf::from("/usr/bin/test"),
@@ -131,6 +234,9 @@ mod tests {
             env: HashMap::from([("KEY".into(), "VALUE".into())]),
             password: String::new(),
             confirm_only: false,
+            prompt_title: None,
+            prompt_message: None,
+            prompt_detail: None,
         };
 
         let encoded = rmp_serde::to_vec(&request).unwrap();
@@ -139,6 +245,27 @@ mod tests {
         assert_eq!(decoded.target, request.target);
         assert_eq!(decoded.args, request.args);
         assert_eq!(decoded.env, request.env);
+    }
+
+    #[test]
+    fn auth_request_roundtrip_with_prompt_text() {
+        let request = AuthRequest {
+            target: PathBuf::from("/usr/bin/test"),
+            args: Vec::new(),
+            env: HashMap::new(),
+            password: String::new(),
+            confirm_only: true,
+            prompt_title: Some("Config access request".into()),
+            prompt_message: Some("Allow this config access?".into()),
+            prompt_detail: Some("/home/osso/.config/example".into()),
+        };
+
+        let encoded = rmp_serde::to_vec(&request).unwrap();
+        let decoded: AuthRequest = rmp_serde::from_slice(&encoded).unwrap();
+
+        assert_eq!(decoded.prompt_title, request.prompt_title);
+        assert_eq!(decoded.prompt_message, request.prompt_message);
+        assert_eq!(decoded.prompt_detail, request.prompt_detail);
     }
 
     #[test]

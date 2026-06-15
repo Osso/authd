@@ -7,7 +7,7 @@
 //! 4. exec() the target command as root or specified user (-u)
 
 use authd_policy::{CallerInfo, PolicyDecision, PolicyEngine};
-use authd_protocol::{AuthRequest, AuthResponse, SOCKET_PATH, collect_wayland_env};
+use authd_protocol::{AuthRequest, AuthResponse, DaemonRequest, SOCKET_PATH, collect_wayland_env};
 use peercred_ipc::Client as IpcClient;
 use std::env;
 use std::os::unix::process::CommandExt;
@@ -191,9 +191,12 @@ fn request_confirmation(target: &Path, args: &[String]) -> bool {
         env: collect_wayland_env(),
         password: String::new(),
         confirm_only: true,
+        prompt_title: None,
+        prompt_message: None,
+        prompt_detail: None,
     };
 
-    match IpcClient::call(SOCKET_PATH, &request) {
+    match IpcClient::call(SOCKET_PATH, &DaemonRequest::Exec(request)) {
         Ok(AuthResponse::Success { .. }) => true,
         Ok(AuthResponse::Denied { reason }) => {
             eprintln!("authsudo: {}", reason);

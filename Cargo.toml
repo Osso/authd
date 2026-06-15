@@ -6,6 +6,7 @@ members = [
     "authsudo",
     "escalate",
     "policy",
+    "polkit-agent",
     "protocol",
 ]
 

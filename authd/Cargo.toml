@@ -13,4 +13,5 @@ tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 anyhow = "1"
+zbus = { version = "5", default-features = false, features = ["tokio"] }
 session-dialog = { git = "https://github.com/Osso/session-dialog" }

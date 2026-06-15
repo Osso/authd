@@ -1,14 +1,24 @@
 mod dialog;
 
 use authd_policy::{PolicyDecision, PolicyEngine};
-use authd_protocol::{AuthRequest, AuthResponse, SOCKET_PATH};
-use dialog::{DialogResult, show_confirmation_dialog};
+use authd_protocol::{
+    AuthRequest, AuthResponse, DaemonRequest, PolkitReply, PolkitRequest, SOCKET_PATH,
+};
+use dialog::{DialogResult, show_confirmation_dialog, show_polkit_dialog};
 use peercred_ipc::{CallerInfo, Connection, Server};
+use std::collections::HashMap;
 use std::sync::Arc;
 use tracing::{error, info};
+use zbus::zvariant::Value;
+
+const PK_SERVICE: &str = "org.freedesktop.PolicyKit1";
+const PK_AUTHORITY_PATH: &str = "/org/freedesktop/PolicyKit1/Authority";
+const PK_AUTHORITY_IFACE: &str = "org.freedesktop.PolicyKit1.Authority";
 
 struct AppState {
     policy: PolicyEngine,
+    /// System-bus connection used to assert polkit authentication responses.
+    bus: zbus::Connection,
 }
 
 #[tokio::main]
@@ -21,10 +31,15 @@ async fn main() -> anyhow::Result<()> {
         error!("failed to load policies: {}", e);
     }
 
-    let state = Arc::new(AppState { policy });
+    let bus = zbus::Connection::system()
+        .await
+        .map_err(|e| anyhow::anyhow!("connect system bus: {e}"))?;
 
-    let server = Server::bind(SOCKET_PATH)?;
-    info!("authd listening on {}", SOCKET_PATH);
+    let state = Arc::new(AppState { policy, bus });
+
+    let socket_path = std::env::var("AUTHD_SOCKET").unwrap_or_else(|_| SOCKET_PATH.to_string());
+    let server = Server::bind(&socket_path)?;
+    info!("authd listening on {}", socket_path);
 
     loop {
         match server.accept().await {
@@ -45,7 +60,7 @@ async fn handle_connection(mut conn: Connection, caller: CallerInfo, state: Arc<
         caller.uid, caller.pid, caller.exe
     );
 
-    let request: AuthRequest = match conn.read().await {
+    let request: DaemonRequest = match conn.read().await {
         Ok(r) => r,
         Err(e) => {
             error!("{}", e);
@@ -58,8 +73,67 @@ async fn handle_connection(mut conn: Connection, caller: CallerInfo, state: Arc<
         }
     };
 
-    let response = process_request(&caller, &request, &state).await;
-    let _ = conn.write(&response).await;
+    match request {
+        DaemonRequest::Exec(request) => {
+            let response = process_request(&caller, &request, &state).await;
+            let _ = conn.write(&response).await;
+        }
+        DaemonRequest::Polkit(request) => {
+            let response = handle_polkit(&caller, &request, &state).await;
+            let _ = conn.write(&response).await;
+        }
+    }
+}
+
+/// Handle a polkit `BeginAuthentication` forwarded by `authd-polkit-agent`:
+/// confirm with the user, then assert the response to polkitd over the system bus.
+async fn handle_polkit(
+    caller: &CallerInfo,
+    request: &PolkitRequest,
+    state: &AppState,
+) -> PolkitReply {
+    info!(
+        "polkit request: action={} uid={} agent_uid={}",
+        request.action_id, request.uid, caller.uid
+    );
+
+    match show_polkit_dialog(&request.message, &request.action_id, &request.env) {
+        DialogResult::Confirmed => match assert_polkit_response(state, request).await {
+            Ok(()) => {
+                info!("polkit response asserted for {}", request.action_id);
+                PolkitReply::Allowed
+            }
+            Err(e) => {
+                error!("polkit response failed: {e}");
+                PolkitReply::Error { message: e }
+            }
+        },
+        DialogResult::Denied => PolkitReply::Denied,
+        DialogResult::Error => PolkitReply::Error {
+            message: "failed to show confirmation dialog".into(),
+        },
+    }
+}
+
+/// Assert `AuthenticationAgentResponse2(uid, cookie, unix-user:uid)` to polkitd.
+/// Trusted because authd runs as root.
+async fn assert_polkit_response(state: &AppState, request: &PolkitRequest) -> Result<(), String> {
+    let mut attrs: HashMap<&str, Value> = HashMap::new();
+    attrs.insert("uid", Value::from(request.uid));
+    let identity = ("unix-user", attrs);
+
+    state
+        .bus
+        .call_method(
+            Some(PK_SERVICE),
+            PK_AUTHORITY_PATH,
+            Some(PK_AUTHORITY_IFACE),
+            "AuthenticationAgentResponse2",
+            &(request.uid, request.cookie.as_str(), identity),
+        )
+        .await
+        .map(|_| ())
+        .map_err(|e| e.to_string())
 }
 
 async fn process_request(
@@ -113,7 +187,15 @@ fn policy_response(
 }
 
 fn confirmation_response(caller: &CallerInfo, request: &AuthRequest) -> AuthResponse {
-    let result = show_confirmation_dialog(caller, &request.target, &request.args, &request.env);
+    let result = show_confirmation_dialog(
+        caller,
+        &request.target,
+        &request.args,
+        &request.env,
+        request.prompt_title.as_deref(),
+        request.prompt_message.as_deref(),
+        request.prompt_detail.as_deref(),
+    );
     match result {
         DialogResult::Confirmed => {
             info!("user confirmed");

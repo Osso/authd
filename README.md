@@ -37,6 +37,17 @@ Setuid binary for terminal use. Checks policies, optionally prompts for password
 ### pkexec (compatibility shim)
 Drop-in replacement for polkit's pkexec. Translates pkexec invocations to authctl.
 
+### authd-polkit-agent (polkit authentication agent)
+Runs in the user's graphical session and registers with the real `polkitd` as
+the session's authentication agent (over D-Bus/zbus). When polkit needs the user
+to authenticate (e.g. `systemctl` → `org.freedesktop.systemd1.manage-units`), it
+forwards the request to the root `authd` daemon, which shows its confirm dialog
+and — on approval — asserts `AuthenticationAgentResponse2` to polkitd. This is an
+allow/forbid model: **no password**, just authd's existing confirmation. polkitd
+trusts the response because authd is root (the same trust model as polkit's own
+setuid `polkit-agent-helper-1`). Autostart it in the compositor in place of
+polkit-gnome (it must run in the graphical session so `XDG_SESSION_ID` is set).
+
 ### authd-policy (library)
 Shared policy engine used by both authd and authsudo.
 
@@ -206,9 +217,15 @@ auth = "none"
 |-------------------|------------------------|---------------------------|
 | Config format     | TOML                   | XML + JavaScript          |
 | Complexity        | ~2000 lines Rust       | ~50000 lines C            |
-| D-Bus dependency  | None                   | Required                  |
+| D-Bus usage       | agent only (zbus)      | full Authority + agents   |
 | GUI toolkit       | iced (Wayland-native)  | GTK                       |
 | CLI support       | authsudo               | pkexec only               |
+
+> **D-Bus note:** authd's own daemon protocol is D-Bus-free (msgpack over a Unix
+> socket). The optional `authd-polkit-agent` does use D-Bus (zbus): it registers
+> with the real `polkitd` as the session's authentication agent so that bare
+> `systemctl`/`NetworkManager`/etc. prompts route through authd's confirm dialog
+> instead of polkit-gnome. See "polkit authentication agent" below.
 
 ## License
 

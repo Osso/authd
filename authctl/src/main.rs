@@ -3,7 +3,7 @@
 //! Sends authorization requests to authd daemon.
 //! authd handles all UI (session-lock dialog).
 
-use authd_protocol::{AuthRequest, AuthResponse, SOCKET_PATH, collect_wayland_env};
+use authd_protocol::{AuthRequest, AuthResponse, DaemonRequest, SOCKET_PATH, collect_wayland_env};
 use peercred_ipc::Client;
 use std::env;
 use std::path::PathBuf;
@@ -59,6 +59,9 @@ fn build_request(args: &[String]) -> AuthRequest {
         env: collect_wayland_env(),
         password: String::new(),
         confirm_only: false,
+        prompt_title: None,
+        prompt_message: None,
+        prompt_detail: None,
     }
 }
 
@@ -83,5 +86,5 @@ fn exit_with_error(message: &str) -> ! {
 }
 
 fn send_request(request: &AuthRequest) -> Result<AuthResponse, String> {
-    Client::call(SOCKET_PATH, request).map_err(|e| e.to_string())
+    Client::call(SOCKET_PATH, &DaemonRequest::Exec(request.clone())).map_err(|e| e.to_string())
 }

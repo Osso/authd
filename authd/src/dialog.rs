@@ -24,16 +24,12 @@ pub fn show_confirmation_dialog(
     target: &PathBuf,
     args: &[String],
     env: &HashMap<String, String>,
+    prompt_title: Option<&str>,
+    prompt_message: Option<&str>,
+    prompt_detail: Option<&str>,
 ) -> DialogResult {
-    // Build command string for dialog
-    let command = if args.is_empty() {
-        target.to_string_lossy().to_string()
-    } else {
-        format!("{} {}", target.display(), args.join(" "))
-    };
-
     let config = DialogConfig {
-        kind: DialogKind::PrivilegeEscalation { command },
+        kind: dialog_kind(target, args, prompt_title, prompt_message, prompt_detail),
         timeout_secs: Some(30),
     };
 
@@ -42,6 +38,59 @@ pub fn show_confirmation_dialog(
     let result = handle.join().unwrap_or(SdResult::Error);
 
     match result {
+        SdResult::Confirmed => DialogResult::Confirmed,
+        SdResult::Denied | SdResult::Timeout => DialogResult::Denied,
+        SdResult::Error => DialogResult::Error,
+    }
+}
+
+fn dialog_kind(
+    target: &PathBuf,
+    args: &[String],
+    prompt_title: Option<&str>,
+    prompt_message: Option<&str>,
+    prompt_detail: Option<&str>,
+) -> DialogKind {
+    match (prompt_title, prompt_message, prompt_detail) {
+        (Some(title), Some(message), Some(detail)) => DialogKind::Generic {
+            title: title.to_string(),
+            message: message.to_string(),
+            detail: detail.to_string(),
+        },
+        _ => DialogKind::PrivilegeEscalation {
+            command: command_text(target, args),
+        },
+    }
+}
+
+fn command_text(target: &PathBuf, args: &[String]) -> String {
+    if args.is_empty() {
+        target.to_string_lossy().to_string()
+    } else {
+        format!("{} {}", target.display(), args.join(" "))
+    }
+}
+
+/// Show a confirmation dialog for a polkit authentication request.
+///
+/// Uses polkit's own human-readable `message` as the prompt and the action id
+/// as the detail line. Allow/Deny only — no password entry.
+pub fn show_polkit_dialog(
+    message: &str,
+    action_id: &str,
+    env: &HashMap<String, String>,
+) -> DialogResult {
+    let config = DialogConfig {
+        kind: DialogKind::Generic {
+            title: "Authorization Required".to_string(),
+            message: message.to_string(),
+            detail: action_id.to_string(),
+        },
+        timeout_secs: Some(30),
+    };
+
+    let handle = session_dialog::show_dialog_async(config, env.clone());
+    match handle.join().unwrap_or(SdResult::Error) {
         SdResult::Confirmed => DialogResult::Confirmed,
         SdResult::Denied | SdResult::Timeout => DialogResult::Denied,
         SdResult::Error => DialogResult::Error,
