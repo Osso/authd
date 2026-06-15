@@ -68,7 +68,7 @@ async fn process_request(
     state: &AppState,
 ) -> AuthResponse {
     info!("auth request: target={:?}", request.target);
-    if request.confirm_only && caller.exe.ends_with("authsudo") {
+    if request.confirm_only && is_trusted_confirm_consumer(caller) {
         return confirmation_response(caller, request);
     }
 
@@ -85,6 +85,14 @@ async fn process_request(
         Ok(pid) => AuthResponse::Success { pid },
         Err(e) => AuthResponse::Error { message: e },
     }
+}
+
+fn is_trusted_confirm_consumer(caller: &CallerInfo) -> bool {
+    caller
+        .exe
+        .file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| matches!(name, "authsudo" | "config-guard"))
 }
 
 fn policy_response(
