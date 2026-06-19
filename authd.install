@@ -4,6 +4,8 @@ post_install() {
 
     echo ":: authd installed. Enable with: systemctl enable --now authd"
     echo ":: /usr/bin/pkexec now points to authd-pkexec"
+    echo ":: Enable the polkit agent in your user session with:"
+    echo "::   systemctl --user enable --now authd-polkit-agent"
 }
 
 post_upgrade() {

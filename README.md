@@ -45,8 +45,8 @@ forwards the request to the root `authd` daemon, which shows its confirm dialog
 and — on approval — asserts `AuthenticationAgentResponse2` to polkitd. This is an
 allow/forbid model: **no password**, just authd's existing confirmation. polkitd
 trusts the response because authd is root (the same trust model as polkit's own
-setuid `polkit-agent-helper-1`). Autostart it in the compositor in place of
-polkit-gnome (it must run in the graphical session so `XDG_SESSION_ID` is set).
+setuid `polkit-agent-helper-1`). Enable the shipped user unit with
+`systemctl --user enable --now authd-polkit-agent`.
 
 ### authd-policy (library)
 Shared policy engine used by both authd and authsudo.

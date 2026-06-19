@@ -14,6 +14,7 @@ authsudo sh -c '
     install -m4755 -o root -g root target/release/authsudo /usr/bin/authsudo
     ln -sf /usr/bin/authd-pkexec /usr/bin/pkexec
     install -m644 authd.service /usr/lib/systemd/system/authd.service
+    install -m644 authd-polkit-agent.service /usr/lib/systemd/user/authd-polkit-agent.service
     install -m644 authd-pkexec.hook /usr/share/libalpm/hooks/authd-pkexec.hook
     install -dm755 /etc/authd/policies.d
     systemctl daemon-reload

@@ -31,6 +31,7 @@ package() {
 
     # Systemd service
     install -Dm644 authd.service "$pkgdir/usr/lib/systemd/system/authd.service"
+    install -Dm644 authd-polkit-agent.service "$pkgdir/usr/lib/systemd/user/authd-polkit-agent.service"
 
     # Example policy
     install -Dm644 etc/authd/policies.d/gparted.toml "$pkgdir/usr/share/authd/examples/gparted.toml"
