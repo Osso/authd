@@ -7,6 +7,8 @@ use session_dialog::{DialogConfig, DialogKind, DialogResult as SdResult};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+const REQUIRED_SESSION_ENV: &[&str] = &["WAYLAND_DISPLAY", "XDG_RUNTIME_DIR"];
+
 /// Result of showing the confirmation dialog
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum DialogResult {
@@ -28,6 +30,10 @@ pub fn show_confirmation_dialog(
     prompt_message: Option<&str>,
     prompt_detail: Option<&str>,
 ) -> DialogResult {
+    if !has_reachable_session_env(env) {
+        return DialogResult::Error;
+    }
+
     let config = DialogConfig {
         kind: dialog_kind(target, args, prompt_title, prompt_message, prompt_detail),
         timeout_secs: Some(30),
@@ -80,6 +86,10 @@ pub fn show_polkit_dialog(
     action_id: &str,
     env: &HashMap<String, String>,
 ) -> DialogResult {
+    if !has_reachable_session_env(env) {
+        return DialogResult::Error;
+    }
+
     let config = DialogConfig {
         kind: DialogKind::Generic {
             title: "Authorization Required".to_string(),
@@ -94,5 +104,52 @@ pub fn show_polkit_dialog(
         SdResult::Confirmed => DialogResult::Confirmed,
         SdResult::Denied | SdResult::Timeout => DialogResult::Denied,
         SdResult::Error => DialogResult::Error,
+    }
+}
+
+fn has_reachable_session_env(env: &HashMap<String, String>) -> bool {
+    REQUIRED_SESSION_ENV
+        .iter()
+        .all(|key| env.get(*key).is_some_and(|value| !value.is_empty()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn session_env_requires_wayland_display_and_runtime_dir() {
+        let env = HashMap::from([
+            ("WAYLAND_DISPLAY".to_string(), "wayland-1".to_string()),
+            ("XDG_RUNTIME_DIR".to_string(), "/run/user/1000".to_string()),
+        ]);
+
+        assert!(has_reachable_session_env(&env));
+    }
+
+    #[test]
+    fn session_env_rejects_missing_or_empty_values() {
+        assert!(!has_reachable_session_env(&HashMap::new()));
+
+        let missing_runtime =
+            HashMap::from([("WAYLAND_DISPLAY".to_string(), "wayland-1".to_string())]);
+        assert!(!has_reachable_session_env(&missing_runtime));
+
+        let empty_display = HashMap::from([
+            ("WAYLAND_DISPLAY".to_string(), String::new()),
+            ("XDG_RUNTIME_DIR".to_string(), "/run/user/1000".to_string()),
+        ]);
+        assert!(!has_reachable_session_env(&empty_display));
+    }
+
+    #[test]
+    fn polkit_dialog_returns_error_without_session_env() {
+        let result = show_polkit_dialog(
+            "Authentication is required.",
+            "org.freedesktop.systemd1.manage-units",
+            &HashMap::new(),
+        );
+
+        assert_eq!(result, DialogResult::Error);
     }
 }
