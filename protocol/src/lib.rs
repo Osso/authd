@@ -187,7 +187,10 @@ mod tests {
                 assert_eq!(p.action_id, "org.freedesktop.systemd1.manage-units");
                 assert_eq!(p.cookie, "2-abc-1-def");
                 assert_eq!(p.uid, 1000);
-                assert_eq!(p.env.get("WAYLAND_DISPLAY").map(String::as_str), Some("wayland-1"));
+                assert_eq!(
+                    p.env.get("WAYLAND_DISPLAY").map(String::as_str),
+                    Some("wayland-1")
+                );
             }
             other => panic!("expected Polkit, got {other:?}"),
         }

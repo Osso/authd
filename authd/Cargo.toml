@@ -15,3 +15,6 @@ tracing-subscriber.workspace = true
 anyhow = "1"
 zbus = { version = "5", default-features = false, features = ["tokio"] }
 session-dialog = { git = "https://github.com/Osso/session-dialog" }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage)'] }

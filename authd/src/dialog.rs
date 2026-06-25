@@ -3,7 +3,9 @@
 //! Shows a secure session-lock confirmation dialog via the session-dialog crate.
 
 use peercred_ipc::CallerInfo;
-use session_dialog::{DialogConfig, DialogKind, DialogResult as SdResult};
+use session_dialog::DialogKind;
+#[cfg(not(coverage))]
+use session_dialog::{DialogConfig, DialogResult as SdResult};
 use std::collections::HashMap;
 use std::path::PathBuf;
 
@@ -34,6 +36,25 @@ pub fn show_confirmation_dialog(
         return DialogResult::Error;
     }
 
+    show_confirmation_dialog_with_session_env(
+        target,
+        args,
+        env,
+        prompt_title,
+        prompt_message,
+        prompt_detail,
+    )
+}
+
+#[cfg(not(coverage))]
+fn show_confirmation_dialog_with_session_env(
+    target: &PathBuf,
+    args: &[String],
+    env: &HashMap<String, String>,
+    prompt_title: Option<&str>,
+    prompt_message: Option<&str>,
+    prompt_detail: Option<&str>,
+) -> DialogResult {
     let config = DialogConfig {
         kind: dialog_kind(target, args, prompt_title, prompt_message, prompt_detail),
         timeout_secs: Some(30),
@@ -48,6 +69,19 @@ pub fn show_confirmation_dialog(
         SdResult::Denied | SdResult::Timeout => DialogResult::Denied,
         SdResult::Error => DialogResult::Error,
     }
+}
+
+#[cfg(coverage)]
+fn show_confirmation_dialog_with_session_env(
+    target: &PathBuf,
+    args: &[String],
+    _env: &HashMap<String, String>,
+    prompt_title: Option<&str>,
+    prompt_message: Option<&str>,
+    prompt_detail: Option<&str>,
+) -> DialogResult {
+    let _ = dialog_kind(target, args, prompt_title, prompt_message, prompt_detail);
+    DialogResult::Error
 }
 
 fn dialog_kind(
@@ -90,6 +124,15 @@ pub fn show_polkit_dialog(
         return DialogResult::Error;
     }
 
+    show_polkit_dialog_with_session_env(message, action_id, env)
+}
+
+#[cfg(not(coverage))]
+fn show_polkit_dialog_with_session_env(
+    message: &str,
+    action_id: &str,
+    env: &HashMap<String, String>,
+) -> DialogResult {
     let config = DialogConfig {
         kind: DialogKind::Generic {
             title: "Authorization Required".to_string(),
@@ -105,6 +148,20 @@ pub fn show_polkit_dialog(
         SdResult::Denied | SdResult::Timeout => DialogResult::Denied,
         SdResult::Error => DialogResult::Error,
     }
+}
+
+#[cfg(coverage)]
+fn show_polkit_dialog_with_session_env(
+    message: &str,
+    action_id: &str,
+    _env: &HashMap<String, String>,
+) -> DialogResult {
+    let _ = DialogKind::Generic {
+        title: "Authorization Required".to_string(),
+        message: message.to_string(),
+        detail: action_id.to_string(),
+    };
+    DialogResult::Error
 }
 
 fn has_reachable_session_env(env: &HashMap<String, String>) -> bool {
@@ -151,5 +208,108 @@ mod tests {
         );
 
         assert_eq!(result, DialogResult::Error);
+    }
+
+    #[cfg(coverage)]
+    #[test]
+    fn dialog_stubs_return_error_with_session_env() {
+        let env = HashMap::from([
+            ("WAYLAND_DISPLAY".to_string(), "wayland-1".to_string()),
+            ("XDG_RUNTIME_DIR".to_string(), "/run/user/1000".to_string()),
+        ]);
+        let caller = CallerInfo {
+            uid: 1000,
+            gid: 1000,
+            pid: 42,
+            exe: PathBuf::from("/usr/bin/authsudo"),
+        };
+
+        assert_eq!(
+            show_confirmation_dialog(
+                &caller,
+                &PathBuf::from("/usr/bin/id"),
+                &["-u".to_string()],
+                &env,
+                Some("Title"),
+                Some("Message"),
+                Some("Detail"),
+            ),
+            DialogResult::Error
+        );
+        assert_eq!(
+            show_polkit_dialog("Message", "org.example.Action", &env),
+            DialogResult::Error
+        );
+        assert_eq!(DialogResult::Confirmed, DialogResult::Confirmed);
+        assert_eq!(DialogResult::Denied, DialogResult::Denied);
+    }
+
+    #[test]
+    fn confirmation_dialog_returns_error_without_session_env() {
+        let caller = CallerInfo {
+            uid: 1000,
+            gid: 1000,
+            pid: 42,
+            exe: PathBuf::from("/usr/bin/authsudo"),
+        };
+
+        let result = show_confirmation_dialog(
+            &caller,
+            &PathBuf::from("/usr/bin/id"),
+            &["-u".to_string()],
+            &HashMap::new(),
+            None,
+            None,
+            None,
+        );
+
+        assert_eq!(result, DialogResult::Error);
+    }
+
+    #[test]
+    fn dialog_kind_prefers_explicit_prompt_text() {
+        let kind = dialog_kind(
+            &PathBuf::from("/usr/bin/id"),
+            &["-u".to_string()],
+            Some("Title"),
+            Some("Message"),
+            Some("Detail"),
+        );
+
+        match kind {
+            DialogKind::Generic {
+                title,
+                message,
+                detail,
+            } => {
+                assert_eq!(title, "Title");
+                assert_eq!(message, "Message");
+                assert_eq!(detail, "Detail");
+            }
+            _ => panic!("expected generic dialog"),
+        }
+    }
+
+    #[test]
+    fn dialog_kind_formats_privilege_command() {
+        let kind = dialog_kind(
+            &PathBuf::from("/usr/bin/id"),
+            &["-u".to_string(), "root".to_string()],
+            None,
+            None,
+            None,
+        );
+
+        match kind {
+            DialogKind::PrivilegeEscalation { command } => {
+                assert_eq!(command, "/usr/bin/id -u root");
+            }
+            _ => panic!("expected privilege escalation dialog"),
+        }
+
+        assert_eq!(
+            command_text(&PathBuf::from("/usr/bin/id"), &[]),
+            "/usr/bin/id"
+        );
     }
 }

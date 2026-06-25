@@ -12,3 +12,6 @@ authd-policy = { path = "../policy" }
 authd-protocol = { path = "../protocol" }
 peercred-ipc = { git = "https://github.com/Osso/peercred-ipc" }
 libc = "0.2"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage)'] }

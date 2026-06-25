@@ -8,3 +8,6 @@ description = "Helper for auto-escalating to root/user via authsudo"
 
 [dependencies]
 nix = { version = "0.29", features = ["user"] }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage)'] }

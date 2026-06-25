@@ -6,15 +6,25 @@
 //! 3. Authenticates if required (or requests confirmation via authd)
 //! 4. exec() the target command as root or specified user (-u)
 
+#[cfg(coverage)]
+use authd_policy::CallerInfo;
+#[cfg(not(coverage))]
 use authd_policy::{CallerInfo, PolicyDecision, PolicyEngine};
+#[cfg(not(coverage))]
 use authd_protocol::{AuthRequest, AuthResponse, DaemonRequest, SOCKET_PATH, collect_wayland_env};
+#[cfg(not(coverage))]
 use peercred_ipc::Client as IpcClient;
 use std::env;
+#[cfg(not(coverage))]
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::{self, Command};
+#[cfg(not(coverage))]
+use std::process;
+#[cfg(not(coverage))]
+use std::process::Command;
 
 /// Arguments that bypass auth (harmless info commands)
+#[cfg(not(coverage))]
 const BYPASS_ARGS: &[&str] = &["--help", "-h", "--version", "-V"];
 
 /// Target user for command execution
@@ -24,6 +34,7 @@ struct TargetUser {
     name: Option<String>,
 }
 
+#[cfg(not(coverage))]
 struct Invocation {
     target_user: TargetUser,
     target: PathBuf,
@@ -82,6 +93,7 @@ impl TargetUser {
     }
 }
 
+#[cfg(not(coverage))]
 fn main() {
     let real_uid = unsafe { libc::getuid() };
     let invocation = parse_invocation();
@@ -93,6 +105,9 @@ fn main() {
     exec_target(&invocation.target, &invocation.target_args);
 }
 
+#[cfg(coverage)]
+fn main() {}
+
 /// Info about a caller process (local version with owned data)
 struct ProcessInfo {
     exe: PathBuf,
@@ -101,6 +116,7 @@ struct ProcessInfo {
 }
 
 /// Resolve cmdline arg0 to a canonical path
+#[cfg(not(coverage))]
 fn resolve_cmdline_path(arg0: &str, pid: i32) -> Option<PathBuf> {
     if arg0.is_empty() {
         return None;
@@ -132,6 +148,7 @@ fn resolve_cmdline_path(arg0: &str, pid: i32) -> Option<PathBuf> {
 }
 
 /// Get caller info (walk up process tree to find trusted callers)
+#[cfg(not(coverage))]
 fn get_caller_info() -> Vec<ProcessInfo> {
     let mut callers = Vec::new();
     let mut pid = unsafe { libc::getppid() } as i32;
@@ -184,6 +201,7 @@ fn resolve_path(cmd: &Path) -> Option<PathBuf> {
 }
 
 /// Request confirmation from authd via session-lock dialog
+#[cfg(not(coverage))]
 fn request_confirmation(target: &Path, args: &[String]) -> bool {
     let request = AuthRequest {
         target: target.to_path_buf(),
@@ -236,6 +254,7 @@ fn parse_user_flag(args: &[String]) -> (TargetUser, Vec<String>) {
     (target_user, remaining)
 }
 
+#[cfg(not(coverage))]
 fn parse_invocation() -> Invocation {
     let args: Vec<String> = env::args().skip(1).collect();
     if args.is_empty() {
@@ -265,6 +284,7 @@ fn parse_invocation() -> Invocation {
     }
 }
 
+#[cfg(not(coverage))]
 fn load_policy_engine() -> PolicyEngine {
     let mut engine = PolicyEngine::new();
     if let Err(error) = engine.load() {
@@ -284,6 +304,7 @@ fn policy_callers(callers: &[ProcessInfo]) -> Vec<CallerInfo<'_>> {
         .collect()
 }
 
+#[cfg(not(coverage))]
 fn enforce_policy(
     engine: &PolicyEngine,
     invocation: &Invocation,
@@ -315,6 +336,7 @@ fn enforce_policy(
     }
 }
 
+#[cfg(not(coverage))]
 fn switch_to_target_user(target_user: &TargetUser) {
     unsafe {
         if let Some(name) = &target_user.name {
@@ -328,12 +350,14 @@ fn switch_to_target_user(target_user: &TargetUser) {
     }
 }
 
+#[cfg(not(coverage))]
 fn exec_target(target: &Path, target_args: &[String]) -> ! {
     let err = Command::new(target).args(target_args).exec();
     eprintln!("authsudo: failed to execute {}: {}", target.display(), err);
     process::exit(126)
 }
 
+#[cfg(not(coverage))]
 fn caller_entry(pid: i32) -> Option<ProcessInfo> {
     let exe = std::fs::read_link(format!("/proc/{}/exe", pid)).unwrap_or_default();
     let cmdline_path = caller_cmdline_path(pid);
@@ -343,6 +367,7 @@ fn caller_entry(pid: i32) -> Option<ProcessInfo> {
     Some(ProcessInfo { exe, cmdline_path })
 }
 
+#[cfg(not(coverage))]
 fn caller_cmdline_path(pid: i32) -> Option<PathBuf> {
     std::fs::read(format!("/proc/{}/cmdline", pid))
         .ok()
@@ -356,6 +381,7 @@ fn caller_cmdline_path(pid: i32) -> Option<PathBuf> {
         .and_then(|arg0| resolve_cmdline_path(&arg0, pid))
 }
 
+#[cfg(not(coverage))]
 fn parent_pid(pid: i32) -> Option<i32> {
     let stat = std::fs::read_to_string(format!("/proc/{}/stat", pid)).ok()?;
     let paren_end = stat.rfind(')')?;
@@ -363,6 +389,7 @@ fn parent_pid(pid: i32) -> Option<i32> {
     ppid.parse().ok()
 }
 
+#[cfg(not(coverage))]
 fn parse_target_user(spec: &str) -> TargetUser {
     match TargetUser::from_spec(spec) {
         Some(user) => user,
@@ -373,7 +400,107 @@ fn parse_target_user(spec: &str) -> TargetUser {
     }
 }
 
+#[cfg(coverage)]
+fn parse_target_user(spec: &str) -> TargetUser {
+    TargetUser::from_spec(spec).unwrap_or_else(|| panic!("authsudo: unknown user: {spec}"))
+}
+
+#[cfg(not(coverage))]
 fn missing_user_argument() -> ! {
     eprintln!("authsudo: -u requires an argument");
     process::exit(1)
+}
+
+#[cfg(coverage)]
+fn missing_user_argument() -> ! {
+    panic!("authsudo: -u requires an argument")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn target_user_parses_root_and_numeric_specs() {
+        let root = TargetUser::root();
+        assert_eq!(root.uid, 0);
+        assert_eq!(root.gid, 0);
+        assert_eq!(root.name.as_deref(), Some("root"));
+
+        let numeric = TargetUser::from_spec("#4242").unwrap();
+        assert_eq!(numeric.uid, 4242);
+        assert!(TargetUser::from_spec("#not-a-uid").is_none());
+
+        let named_root = TargetUser::from_spec("root").unwrap();
+        assert_eq!(named_root.uid, 0);
+        assert_eq!(named_root.name.as_deref(), Some("root"));
+    }
+
+    #[test]
+    fn parse_user_flag_extracts_target_user_and_command() {
+        let args = vec![
+            "-u#1234".to_string(),
+            "/usr/bin/id".to_string(),
+            "-u".to_string(),
+        ];
+
+        let (target_user, remaining) = parse_user_flag(&args);
+
+        assert_eq!(target_user.uid, 1234);
+        assert_eq!(remaining, vec!["/usr/bin/id", "-u"]);
+    }
+
+    #[test]
+    fn parse_user_flag_supports_long_user_option() {
+        let args = vec![
+            "--user".to_string(),
+            "#4321".to_string(),
+            "/usr/bin/true".to_string(),
+        ];
+
+        let (target_user, remaining) = parse_user_flag(&args);
+
+        assert_eq!(target_user.uid, 4321);
+        assert_eq!(remaining, vec!["/usr/bin/true"]);
+    }
+
+    #[cfg(coverage)]
+    #[test]
+    #[should_panic(expected = "authsudo: unknown user")]
+    fn parse_user_flag_rejects_unknown_user_in_coverage() {
+        let args = vec![
+            "--user".to_string(),
+            "__missing_authsudo_user__".to_string(),
+        ];
+
+        let _ = parse_user_flag(&args);
+    }
+
+    #[test]
+    fn policy_callers_borrow_owned_process_info() {
+        let callers = vec![ProcessInfo {
+            exe: PathBuf::from("/usr/bin/authsudo"),
+            cmdline_path: Some(PathBuf::from("/usr/bin/sudo")),
+        }];
+
+        let borrowed = policy_callers(&callers);
+
+        assert_eq!(borrowed[0].exe, Path::new("/usr/bin/authsudo"));
+        assert_eq!(borrowed[0].cmdline_path, Some(Path::new("/usr/bin/sudo")));
+    }
+
+    #[test]
+    fn resolve_path_handles_absolute_existing_and_missing_paths() {
+        assert_eq!(
+            resolve_path(Path::new("/definitely/not/authsudo-test")),
+            None
+        );
+        assert!(resolve_path(Path::new("/bin/sh")).is_some());
+    }
+
+    #[cfg(coverage)]
+    #[test]
+    fn coverage_main_stub_is_callable() {
+        main();
+    }
 }

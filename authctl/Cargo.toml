@@ -16,3 +16,6 @@ path = "src/main.rs"
 [[bin]]
 name = "pkexec"
 path = "src/pkexec_compat.rs"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage)'] }

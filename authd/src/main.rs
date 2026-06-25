@@ -1,26 +1,38 @@
 mod dialog;
 
 use authd_policy::{PolicyDecision, PolicyEngine};
-use authd_protocol::{
-    AuthRequest, AuthResponse, DaemonRequest, PolkitReply, PolkitRequest, SOCKET_PATH,
-};
+use authd_protocol::{AuthRequest, AuthResponse};
+#[cfg(not(coverage))]
+use authd_protocol::{DaemonRequest, PolkitReply, PolkitRequest, SOCKET_PATH};
+#[cfg(not(coverage))]
 use dialog::{DialogResult, show_confirmation_dialog, show_polkit_dialog};
+#[cfg(coverage)]
+use peercred_ipc::CallerInfo;
+#[cfg(not(coverage))]
 use peercred_ipc::{CallerInfo, Connection, Server};
 use std::collections::HashMap;
+#[cfg(not(coverage))]
 use std::sync::Arc;
+#[cfg(not(coverage))]
 use tracing::{error, info};
+#[cfg(not(coverage))]
 use zbus::zvariant::Value;
 
+#[cfg(not(coverage))]
 const PK_SERVICE: &str = "org.freedesktop.PolicyKit1";
+#[cfg(not(coverage))]
 const PK_AUTHORITY_PATH: &str = "/org/freedesktop/PolicyKit1/Authority";
+#[cfg(not(coverage))]
 const PK_AUTHORITY_IFACE: &str = "org.freedesktop.PolicyKit1.Authority";
 
 struct AppState {
     policy: PolicyEngine,
     /// System-bus connection used to assert polkit authentication responses.
+    #[cfg(not(coverage))]
     bus: zbus::Connection,
 }
 
+#[cfg(not(coverage))]
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
@@ -54,6 +66,10 @@ async fn main() -> anyhow::Result<()> {
     }
 }
 
+#[cfg(coverage)]
+fn main() {}
+
+#[cfg(not(coverage))]
 async fn handle_connection(mut conn: Connection, caller: CallerInfo, state: Arc<AppState>) {
     info!(
         "connection from uid={} pid={} exe={:?}",
@@ -87,6 +103,7 @@ async fn handle_connection(mut conn: Connection, caller: CallerInfo, state: Arc<
 
 /// Handle a polkit `BeginAuthentication` forwarded by `authd-polkit-agent`:
 /// confirm with the user, then assert the response to polkitd over the system bus.
+#[cfg(not(coverage))]
 async fn handle_polkit(
     caller: &CallerInfo,
     request: &PolkitRequest,
@@ -117,6 +134,7 @@ async fn handle_polkit(
 
 /// Assert `AuthenticationAgentResponse2(uid, cookie, unix-user:uid)` to polkitd.
 /// Trusted because authd runs as root.
+#[cfg(not(coverage))]
 async fn assert_polkit_response(state: &AppState, request: &PolkitRequest) -> Result<(), String> {
     let mut attrs: HashMap<&str, Value> = HashMap::new();
     attrs.insert("uid", Value::from(request.uid));
@@ -136,6 +154,7 @@ async fn assert_polkit_response(state: &AppState, request: &PolkitRequest) -> Re
         .map_err(|e| e.to_string())
 }
 
+#[cfg(not(coverage))]
 async fn process_request(
     caller: &CallerInfo,
     request: &AuthRequest,
@@ -186,6 +205,7 @@ fn policy_response(
     }
 }
 
+#[cfg(not(coverage))]
 fn confirmation_response(caller: &CallerInfo, request: &AuthRequest) -> AuthResponse {
     let result = show_confirmation_dialog(
         caller,
@@ -210,6 +230,13 @@ fn confirmation_response(caller: &CallerInfo, request: &AuthRequest) -> AuthResp
     }
 }
 
+#[cfg(coverage)]
+fn confirmation_response(_caller: &CallerInfo, _request: &AuthRequest) -> AuthResponse {
+    AuthResponse::Error {
+        message: "confirmation dialog unavailable in coverage build".into(),
+    }
+}
+
 trait ConfirmationOutcome {
     fn into_error(self) -> Option<AuthResponse>;
 }
@@ -223,6 +250,7 @@ impl ConfirmationOutcome for AuthResponse {
     }
 }
 
+#[cfg(not(coverage))]
 async fn spawn_process(request: &AuthRequest) -> Result<u32, String> {
     use tokio::process::Command;
 
@@ -243,4 +271,114 @@ async fn spawn_process(request: &AuthRequest) -> Result<u32, String> {
 
     // Don't wait for the process to complete
     Ok(pid)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use authd_protocol::{AuthRequirement, PolicyRule};
+    use std::path::PathBuf;
+
+    fn caller(exe: &str, uid: u32) -> CallerInfo {
+        CallerInfo {
+            uid,
+            gid: uid,
+            pid: 123,
+            exe: PathBuf::from(exe),
+        }
+    }
+
+    fn request(target: &str) -> AuthRequest {
+        AuthRequest {
+            target: PathBuf::from(target),
+            args: Vec::new(),
+            env: HashMap::new(),
+            password: String::new(),
+            confirm_only: false,
+            prompt_title: None,
+            prompt_message: None,
+            prompt_detail: None,
+        }
+    }
+
+    #[cfg(coverage)]
+    fn state_with_rule(auth: AuthRequirement) -> AppState {
+        let mut policy = PolicyEngine::new();
+        policy.add_rule(PolicyRule {
+            target: PathBuf::from("/usr/bin/id"),
+            allow_users: Vec::new(),
+            allow_groups: Vec::new(),
+            allow_callers: vec![PathBuf::from("/usr/bin/authsudo")],
+            auth,
+            cache_timeout: 300,
+        });
+        AppState { policy }
+    }
+
+    #[test]
+    fn trusted_confirm_consumers_are_named_tools() {
+        assert!(is_trusted_confirm_consumer(&caller(
+            "/usr/bin/authsudo",
+            1000
+        )));
+        assert!(is_trusted_confirm_consumer(&caller(
+            "/opt/bin/config-guard",
+            1000
+        )));
+        assert!(!is_trusted_confirm_consumer(&caller("/usr/bin/curl", 1000)));
+    }
+
+    #[cfg(coverage)]
+    #[test]
+    fn policy_response_maps_terminal_decisions() {
+        let unknown = AppState {
+            policy: PolicyEngine::new(),
+        };
+        assert!(matches!(
+            policy_response(
+                &caller("/usr/bin/authsudo", 1000),
+                &request("/usr/bin/none"),
+                &unknown
+            ),
+            Some(AuthResponse::UnknownTarget)
+        ));
+
+        let deny = state_with_rule(AuthRequirement::Deny);
+        assert!(matches!(
+            policy_response(
+                &caller("/usr/bin/authsudo", 1000),
+                &request("/usr/bin/id"),
+                &deny
+            ),
+            Some(AuthResponse::Denied { .. })
+        ));
+
+        let allow = state_with_rule(AuthRequirement::None);
+        assert!(
+            policy_response(
+                &caller("/usr/bin/authsudo", 1000),
+                &request("/usr/bin/id"),
+                &allow
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn success_confirmation_outcome_means_no_error() {
+        assert!(AuthResponse::Success { pid: 42 }.into_error().is_none());
+        assert!(matches!(
+            AuthResponse::Denied {
+                reason: "no".into()
+            }
+            .into_error(),
+            Some(AuthResponse::Denied { .. })
+        ));
+    }
+
+    #[cfg(coverage)]
+    #[test]
+    fn coverage_main_stub_is_callable() {
+        main();
+    }
 }

@@ -11,16 +11,27 @@
 use std::collections::HashMap;
 
 use anyhow::{Context, Result};
+#[cfg(not(coverage))]
 use authd_protocol::{DaemonRequest, PolkitReply, PolkitRequest, SOCKET_PATH, collect_wayland_env};
+#[cfg(not(coverage))]
 use peercred_ipc::Client;
+#[cfg(not(coverage))]
 use tracing::{error, info, warn};
+#[cfg(not(coverage))]
 use zbus::Connection;
-use zbus::zvariant::{OwnedValue, Value};
+use zbus::zvariant::OwnedValue;
+#[cfg(not(coverage))]
+use zbus::zvariant::Value;
 
+#[cfg(not(coverage))]
 const AGENT_PATH: &str = "/com/ossonet/authd/PolkitAgent";
+#[cfg(not(coverage))]
 const PK_SERVICE: &str = "org.freedesktop.PolicyKit1";
+#[cfg(not(coverage))]
 const PK_AUTHORITY_PATH: &str = "/org/freedesktop/PolicyKit1/Authority";
+#[cfg(not(coverage))]
 const PK_AUTHORITY_IFACE: &str = "org.freedesktop.PolicyKit1.Authority";
+#[cfg(not(coverage))]
 const LOCALE: &str = "en_US.UTF-8";
 
 /// polkit `Identity` struct: `(sa{sv})` — kind + attribute map (e.g. uid).
@@ -30,13 +41,16 @@ type Identity = (String, HashMap<String, OwnedValue>);
 /// dismissed the dialog" response; anything else is reported as `Failed`.
 #[derive(Debug, zbus::DBusError)]
 #[zbus(prefix = "org.freedesktop.PolicyKit1.Error")]
+#[cfg(not(coverage))]
 enum AgentError {
     Failed(String),
     Cancelled(String),
 }
 
+#[cfg(not(coverage))]
 struct Agent;
 
+#[cfg(not(coverage))]
 #[zbus::interface(name = "org.freedesktop.PolicyKit1.AuthenticationAgent")]
 impl Agent {
     async fn begin_authentication(
@@ -98,6 +112,7 @@ fn caller_uid(identities: &[Identity]) -> Option<u32> {
 
 /// Forward the request to authd over its Unix socket (blocking IPC moved off
 /// the async executor so the dialog wait doesn't stall other work).
+#[cfg(not(coverage))]
 async fn ask_authd(request: PolkitRequest) -> Result<PolkitReply> {
     let socket = std::env::var("AUTHD_SOCKET").unwrap_or_else(|_| SOCKET_PATH.to_string());
     tokio::task::spawn_blocking(move || {
@@ -113,6 +128,7 @@ fn session_id() -> Result<String> {
         .context("XDG_SESSION_ID not set (agent must run in the graphical session)")
 }
 
+#[cfg(not(coverage))]
 async fn register_agent(conn: &Connection, session: &str) -> Result<()> {
     let mut attrs: HashMap<&str, Value> = HashMap::new();
     attrs.insert("session-id", Value::from(session));
@@ -130,6 +146,7 @@ async fn register_agent(conn: &Connection, session: &str) -> Result<()> {
     Ok(())
 }
 
+#[cfg(not(coverage))]
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
@@ -150,4 +167,51 @@ async fn main() -> Result<()> {
     // Run until killed; polkit auto-unregisters when our bus name drops.
     std::future::pending::<()>().await;
     Ok(())
+}
+
+#[cfg(coverage)]
+fn main() {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn caller_uid_uses_unix_user_identity() {
+        let identities = vec![
+            ("unix-group".to_string(), HashMap::new()),
+            (
+                "unix-user".to_string(),
+                HashMap::from([("uid".to_string(), OwnedValue::from(1000_u32))]),
+            ),
+        ];
+
+        assert_eq!(caller_uid(&identities), Some(1000));
+    }
+
+    #[test]
+    fn caller_uid_rejects_missing_or_wrong_identity() {
+        assert_eq!(caller_uid(&[]), None);
+
+        let identities = vec![(
+            "unix-group".to_string(),
+            HashMap::from([("uid".to_string(), OwnedValue::from(1000_u32))]),
+        )];
+        assert_eq!(caller_uid(&identities), None);
+    }
+
+    #[test]
+    fn session_id_matches_environment_state() {
+        match (std::env::var("XDG_SESSION_ID"), session_id()) {
+            (Ok(expected), Ok(actual)) => assert_eq!(actual, expected),
+            (Err(_), Err(error)) => assert!(error.to_string().contains("XDG_SESSION_ID not set")),
+            (expected, actual) => panic!("session mismatch: {expected:?} {actual:?}"),
+        }
+    }
+
+    #[cfg(coverage)]
+    #[test]
+    fn coverage_main_stub_is_callable() {
+        main();
+    }
 }

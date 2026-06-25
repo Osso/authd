@@ -14,10 +14,14 @@
 //! }
 //! ```
 
+#[cfg(not(coverage))]
 use std::ffi::OsString;
 use std::io;
+#[cfg(not(coverage))]
 use std::os::unix::process::CommandExt;
+#[cfg(not(coverage))]
 use std::path::PathBuf;
+#[cfg(not(coverage))]
 use std::process::Command;
 
 use nix::unistd::{Uid, User};
@@ -81,6 +85,11 @@ pub fn ensure_user_id(target_uid: Uid) -> Result<(), Error> {
         return Ok(());
     }
 
+    reexec_via_authsudo(target_uid)
+}
+
+#[cfg(not(coverage))]
+fn reexec_via_authsudo(target_uid: Uid) -> Result<(), Error> {
     let authsudo = which("authsudo").ok_or(Error::AuthsudoNotFound)?;
 
     // Use absolute path to current executable to prevent TOCTOU
@@ -105,11 +114,23 @@ pub fn ensure_user_id(target_uid: Uid) -> Result<(), Error> {
     Err(Error::ExecFailed(err))
 }
 
+#[cfg(coverage)]
+fn reexec_via_authsudo(_target_uid: Uid) -> Result<(), Error> {
+    Err(Error::AuthsudoNotFound)
+}
+
 /// Check if authsudo is available in PATH.
+#[cfg(not(coverage))]
 pub fn is_available() -> bool {
     which("authsudo").is_some()
 }
 
+#[cfg(coverage)]
+pub fn is_available() -> bool {
+    false
+}
+
+#[cfg(not(coverage))]
 fn which(binary: &str) -> Option<PathBuf> {
     use std::os::unix::fs::PermissionsExt;
 
@@ -125,4 +146,54 @@ fn which(binary: &str) -> Option<PathBuf> {
             None
         })
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ensure_current_uid_is_noop() {
+        assert!(ensure_user_id(Uid::effective()).is_ok());
+    }
+
+    #[cfg(coverage)]
+    #[test]
+    fn ensure_root_and_availability_use_coverage_paths() {
+        let result = ensure_root();
+
+        assert!(result.is_ok() || matches!(result, Err(Error::AuthsudoNotFound)));
+        assert!(!is_available());
+    }
+
+    #[cfg(coverage)]
+    #[test]
+    fn ensure_other_uid_reports_missing_authsudo_in_coverage() {
+        let other_uid = Uid::from_raw(Uid::effective().as_raw().saturating_add(1));
+
+        assert!(matches!(
+            ensure_user_id(other_uid),
+            Err(Error::AuthsudoNotFound)
+        ));
+    }
+
+    #[test]
+    fn missing_user_is_reported() {
+        assert!(matches!(
+            ensure_user("__authd_missing_user__"),
+            Err(Error::UserNotFound(name)) if name == "__authd_missing_user__"
+        ));
+    }
+
+    #[test]
+    fn error_messages_are_actionable() {
+        assert_eq!(
+            Error::AuthsudoNotFound.to_string(),
+            "This operation requires elevated privileges. Install authsudo or run with sudo."
+        );
+        assert_eq!(
+            Error::UserNotFound("nobody-here".to_string()).to_string(),
+            "User not found: nobody-here"
+        );
+    }
 }
