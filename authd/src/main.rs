@@ -276,6 +276,7 @@ async fn spawn_process(request: &AuthRequest) -> Result<u32, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(coverage)]
     use authd_protocol::{AuthRequirement, PolicyRule};
     use std::path::PathBuf;
 
@@ -288,6 +289,7 @@ mod tests {
         }
     }
 
+    #[cfg(coverage)]
     fn request(target: &str) -> AuthRequest {
         AuthRequest {
             target: PathBuf::from(target),

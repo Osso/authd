@@ -34,6 +34,8 @@ struct TargetUser {
     name: Option<String>,
 }
 
+const PROC_STAT_STARTTIME_INDEX_AFTER_COMM: usize = 19;
+
 #[cfg(not(coverage))]
 struct Invocation {
     target_user: TargetUser,
@@ -110,9 +112,12 @@ fn main() {}
 
 /// Info about a caller process (local version with owned data)
 struct ProcessInfo {
+    pid: i32,
     exe: PathBuf,
     /// Resolved path of cmdline arg0 (for scripts run via interpreters)
     cmdline_path: Option<PathBuf>,
+    /// Process start time from /proc/<pid>/stat field 22, in clock ticks since boot.
+    start_time: Option<u64>,
 }
 
 /// Resolve cmdline arg0 to a canonical path
@@ -361,10 +366,16 @@ fn exec_target(target: &Path, target_args: &[String]) -> ! {
 fn caller_entry(pid: i32) -> Option<ProcessInfo> {
     let exe = std::fs::read_link(format!("/proc/{}/exe", pid)).unwrap_or_default();
     let cmdline_path = caller_cmdline_path(pid);
+    let start_time = process_start_time(pid);
     if exe.as_os_str().is_empty() && cmdline_path.is_none() {
         return None;
     }
-    Some(ProcessInfo { exe, cmdline_path })
+    Some(ProcessInfo {
+        pid,
+        exe,
+        cmdline_path,
+        start_time,
+    })
 }
 
 #[cfg(not(coverage))]
@@ -387,6 +398,20 @@ fn parent_pid(pid: i32) -> Option<i32> {
     let paren_end = stat.rfind(')')?;
     let ppid = stat[paren_end + 2..].split_whitespace().nth(1)?;
     ppid.parse().ok()
+}
+
+#[cfg(not(coverage))]
+fn process_start_time(pid: i32) -> Option<u64> {
+    let stat = std::fs::read_to_string(format!("/proc/{}/stat", pid)).ok()?;
+    parse_process_start_time(&stat)
+}
+
+fn parse_process_start_time(stat: &str) -> Option<u64> {
+    let paren_end = stat.rfind(')')?;
+    stat[paren_end + 2..]
+        .split_whitespace()
+        .nth(PROC_STAT_STARTTIME_INDEX_AFTER_COMM)
+        .and_then(|field| field.parse().ok())
 }
 
 #[cfg(not(coverage))]
@@ -479,14 +504,25 @@ mod tests {
     #[test]
     fn policy_callers_borrow_owned_process_info() {
         let callers = vec![ProcessInfo {
+            pid: 4242,
             exe: PathBuf::from("/usr/bin/authsudo"),
             cmdline_path: Some(PathBuf::from("/usr/bin/sudo")),
+            start_time: Some(12345),
         }];
 
         let borrowed = policy_callers(&callers);
 
         assert_eq!(borrowed[0].exe, Path::new("/usr/bin/authsudo"));
         assert_eq!(borrowed[0].cmdline_path, Some(Path::new("/usr/bin/sudo")));
+        assert_eq!(callers[0].pid, 4242);
+        assert_eq!(callers[0].start_time, Some(12345));
+    }
+
+    #[test]
+    fn parse_process_start_time_reads_stat_field_after_comm() {
+        let stat = "4242 (process name with spaces) S 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 987654321 20";
+
+        assert_eq!(parse_process_start_time(stat), Some(987654321));
     }
 
     #[test]
