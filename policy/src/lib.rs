@@ -31,6 +31,9 @@ pub enum PolicyDecision {
 /// Caller info for policy checking
 #[derive(Debug, Clone)]
 pub struct CallerInfo<'a> {
+    pub pid: Option<i32>,
+    /// Process start time from /proc/<pid>/stat field 22, in clock ticks since boot.
+    pub start_time: Option<u64>,
     pub exe: &'a Path,
     /// Full resolved path of cmdline arg0 (for scripts run via interpreters)
     pub cmdline_path: Option<&'a Path>,
@@ -128,6 +131,8 @@ impl PolicyEngine {
         let callers: Vec<CallerInfo> = caller_exe
             .into_iter()
             .map(|exe| CallerInfo {
+                pid: None,
+                start_time: None,
                 exe,
                 cmdline_path: None,
             })

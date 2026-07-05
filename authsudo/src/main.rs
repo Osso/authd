@@ -303,6 +303,8 @@ fn policy_callers(callers: &[ProcessInfo]) -> Vec<CallerInfo<'_>> {
     callers
         .iter()
         .map(|caller| CallerInfo {
+            pid: Some(caller.pid),
+            start_time: caller.start_time,
             exe: caller.exe.as_path(),
             cmdline_path: caller.cmdline_path.as_deref(),
         })
@@ -512,10 +514,10 @@ mod tests {
 
         let borrowed = policy_callers(&callers);
 
+        assert_eq!(borrowed[0].pid, Some(4242));
+        assert_eq!(borrowed[0].start_time, Some(12345));
         assert_eq!(borrowed[0].exe, Path::new("/usr/bin/authsudo"));
         assert_eq!(borrowed[0].cmdline_path, Some(Path::new("/usr/bin/sudo")));
-        assert_eq!(callers[0].pid, 4242);
-        assert_eq!(callers[0].start_time, Some(12345));
     }
 
     #[test]

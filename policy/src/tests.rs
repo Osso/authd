@@ -290,6 +290,8 @@ fn caller_cmdline_path_can_authorize_interpreter_scripts() {
         Path::new("/usr/bin/protected"),
         uid,
         &[CallerInfo {
+            pid: Some(4242),
+            start_time: Some(987654321),
             exe: Path::new("/usr/bin/python"),
             cmdline_path: Some(Path::new("/opt/scripts/request-access")),
         }],
