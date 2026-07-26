@@ -10,7 +10,7 @@ path = "src/main.rs"
 [dependencies]
 authd-policy = { path = "../policy" }
 authd-protocol = { path = "../protocol" }
-peercred-ipc = { git = "https://github.com/Osso/peercred-ipc" }
+peercred-ipc.workspace = true
 libc = "0.2"
 
 [lints.rust]

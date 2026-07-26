@@ -394,7 +394,9 @@ mod tests {
     #[cfg(coverage)]
     use authd_protocol::{AuthRequirement, PolicyRule};
     #[cfg(not(coverage))]
-    use peercred_ipc::{Client, IpcError};
+    use std::io::{Read, Write};
+    #[cfg(not(coverage))]
+    use std::os::unix::net::UnixStream;
     use std::path::PathBuf;
     #[cfg(not(coverage))]
     use std::sync::Arc;
@@ -437,6 +439,19 @@ mod tests {
             prompt_message: None,
             prompt_detail: None,
         })
+    }
+
+    #[cfg(not(coverage))]
+    fn request_until_timeout(socket_path: String) -> std::io::ErrorKind {
+        let mut stream = UnixStream::connect(socket_path).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_millis(50)))
+            .unwrap();
+        let request = rmp_serde::to_vec(&confirmation_request()).unwrap();
+        stream.write_all(&request).unwrap();
+
+        let mut response = [0u8; 1];
+        stream.read(&mut response).unwrap_err().kind()
     }
 
     fn caller(exe: &str, uid: u32) -> CallerInfo {
@@ -499,17 +514,11 @@ mod tests {
 
         tokio::time::sleep(Duration::from_millis(10)).await;
         let client_path = socket_path.clone();
-        let client_task = tokio::task::spawn_blocking(move || {
-            Client::call_timeout::<_, DaemonRequest, AuthResponse>(
-                client_path,
-                &confirmation_request(),
-                Duration::from_millis(50),
-            )
-        });
+        let client_task = tokio::task::spawn_blocking(move || request_until_timeout(client_path));
 
         assert!(matches!(
             client_task.await.unwrap(),
-            Err(IpcError::Timeout(_))
+            std::io::ErrorKind::TimedOut | std::io::ErrorKind::WouldBlock
         ));
         server_task.await.unwrap();
         assert!(cancelled.load(Ordering::SeqCst));

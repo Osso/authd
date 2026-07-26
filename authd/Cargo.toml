@@ -17,5 +17,8 @@ anyhow = "1"
 zbus = { version = "5", default-features = false, features = ["tokio"] }
 session-dialog = { git = "https://github.com/Osso/session-dialog", rev = "6a3a7752ff6d8928e8e184e9cde989eaf6b70a95" }
 
+[dev-dependencies]
+rmp-serde.workspace = true
+
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage)'] }
