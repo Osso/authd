@@ -303,6 +303,7 @@ async fn confirm_session_response(
     let session = match validate_confirm_session(request) {
         Ok(session) => session,
         Err(error) => {
+            eprintln!("authd: ConfirmSession validation failed: {error}");
             return ConfirmSessionResponse::Denied {
                 reason: error.to_string(),
             };
