@@ -20,7 +20,7 @@ authors = ["Alessio Deiana <adeiana@gmail.com>"]
 authd-protocol = { path = "protocol" }
 authd-policy = { path = "policy" }
 authd-escalate = { path = "escalate" }
-peercred-ipc = { git = "https://github.com/Osso/peercred-ipc", rev = "e5478471c2b76bb3f353afdcda262783e009cf43" }
+peercred-ipc = { git = "https://github.com/Osso/peercred-ipc", tag = "raw-protocol-disconnect-v1" }
 serde = { version = "1", features = ["derive"] }
 rmp-serde = "1"
 tokio = { version = "1", features = ["full"] }

@@ -2070,7 +2070,7 @@ checksum = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
 [[package]]
 name = "peercred-ipc"
 version = "0.1.0"
-source = "git+https://github.com/Osso/peercred-ipc?rev=e5478471c2b76bb3f353afdcda262783e009cf43#e5478471c2b76bb3f353afdcda262783e009cf43"
+source = "git+https://github.com/Osso/peercred-ipc?tag=raw-protocol-disconnect-v1#a3b41bba5c7fd836bccd3d621be7a16bc1249d08"
 dependencies = [
  "libc",
  "rmp-serde",
