@@ -149,10 +149,13 @@ dependencies = [
  "anyhow",
  "authd-policy",
  "authd-protocol",
+ "libc",
  "peercred-ipc",
  "rmp-serde",
  "serde",
  "session-dialog",
+ "tempfile",
+ "thiserror 2.0.17",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -2441,7 +2444,7 @@ dependencies = [
 [[package]]
 name = "session-dialog"
 version = "0.1.0"
-source = "git+https://github.com/Osso/session-dialog?rev=6a3a7752ff6d8928e8e184e9cde989eaf6b70a95#6a3a7752ff6d8928e8e184e9cde989eaf6b70a95"
+source = "git+https://github.com/Osso/session-dialog?rev=60678798287a1e02acb553e100667cd24c006f13#60678798287a1e02acb553e100667cd24c006f13"
 dependencies = [
  "iced",
  "iced_sessionlock",

@@ -13,12 +13,15 @@ serde.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
+thiserror.workspace = true
 anyhow = "1"
 zbus = { version = "5", default-features = false, features = ["tokio"] }
-session-dialog = { git = "https://github.com/Osso/session-dialog", rev = "6a3a7752ff6d8928e8e184e9cde989eaf6b70a95" }
+session-dialog = { git = "https://github.com/Osso/session-dialog", rev = "60678798287a1e02acb553e100667cd24c006f13" }
 
 [dev-dependencies]
+libc = "0.2"
 rmp-serde.workspace = true
+tempfile = "3"
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage)'] }

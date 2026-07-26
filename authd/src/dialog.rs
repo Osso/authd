@@ -66,7 +66,7 @@ async fn show_confirmation_dialog_with_session_env(
         timeout_secs: Some(30),
     };
 
-    show_dialog_process(caller, config, env, trace).await
+    show_dialog_process(caller.uid, caller.gid, config, env, trace).await
 }
 
 #[cfg(coverage)]
@@ -103,10 +103,48 @@ fn command_text(target: &Path, args: &[String]) -> String {
     }
 }
 
+/// Show a Secrets Broker confirmation in the independently validated target session.
+#[cfg(not(coverage))]
+pub async fn show_target_session_dialog(
+    uid: u32,
+    gid: u32,
+    env: &HashMap<String, String>,
+    title: &str,
+    message: &str,
+    detail: &str,
+    trace: &RequestTrace,
+) -> DialogResult {
+    if !has_reachable_session_env(env) {
+        return DialogResult::Error;
+    }
+
+    let config = DialogConfig {
+        kind: DialogKind::Generic {
+            title: title.to_string(),
+            message: message.to_string(),
+            detail: detail.to_string(),
+        },
+        timeout_secs: Some(30),
+    };
+
+    show_dialog_process(uid, gid, config, env, trace).await
+}
+
+#[cfg(coverage)]
+pub async fn show_target_session_dialog(
+    _uid: u32,
+    _gid: u32,
+    env: &HashMap<String, String>,
+    _title: &str,
+    _message: &str,
+    _detail: &str,
+    _trace: &RequestTrace,
+) -> DialogResult {
+    let _ = has_reachable_session_env(env);
+    DialogResult::Error
+}
+
 /// Show a confirmation dialog for a polkit authentication request.
-///
-/// Uses polkit's own human-readable `message` as the prompt and the action id
-/// as the detail line. Allow/Deny only — no password entry.
 pub async fn show_polkit_dialog(
     caller: &CallerInfo,
     message: &str,
@@ -138,7 +176,7 @@ async fn show_polkit_dialog_with_session_env(
         timeout_secs: Some(30),
     };
 
-    show_dialog_process(caller, config, env, trace).await
+    show_dialog_process(caller.uid, caller.gid, config, env, trace).await
 }
 
 #[cfg(coverage)]
@@ -159,13 +197,14 @@ async fn show_polkit_dialog_with_session_env(
 
 #[cfg(not(coverage))]
 async fn show_dialog_process(
-    caller: &CallerInfo,
+    uid: u32,
+    gid: u32,
     config: DialogConfig,
     env: &HashMap<String, String>,
     trace: &RequestTrace,
 ) -> DialogResult {
     trace.log("dialog_spawn_requested");
-    let mut dialog = match spawn_dialog(&config, caller.uid, caller.gid, env, Some(trace.id())) {
+    let mut dialog = match spawn_dialog(&config, uid, gid, env, Some(trace.id())) {
         Ok(dialog) => dialog,
         Err(_) => return DialogResult::Error,
     };
@@ -285,6 +324,23 @@ mod tests {
         );
         assert_eq!(DialogResult::Confirmed, DialogResult::Confirmed);
         assert_eq!(DialogResult::Denied, DialogResult::Denied);
+    }
+
+    #[tokio::test]
+    async fn target_session_dialog_rejects_missing_session_env() {
+        let trace = RequestTrace::new();
+        let result = show_target_session_dialog(
+            1000,
+            1000,
+            &HashMap::new(),
+            "Secrets Broker",
+            "Unlock credentials?",
+            "mysql-gc:prod-ro",
+            &trace,
+        )
+        .await;
+
+        assert_eq!(result, DialogResult::Error);
     }
 
     #[tokio::test]

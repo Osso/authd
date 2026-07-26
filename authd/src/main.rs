@@ -1,15 +1,18 @@
 mod dialog;
+mod session;
 
 use authd_policy::{PolicyDecision, PolicyEngine};
-use authd_protocol::{AuthRequest, AuthResponse};
+use authd_protocol::{AuthRequest, AuthResponse, ConfirmSessionRequest, ConfirmSessionResponse};
 #[cfg(not(coverage))]
 use authd_protocol::{DaemonRequest, PolkitReply, PolkitRequest, SOCKET_PATH};
 #[cfg(not(coverage))]
-use dialog::{ConfirmationPrompt, DialogResult, show_confirmation_dialog, show_polkit_dialog};
+use dialog::{ConfirmationPrompt, show_confirmation_dialog, show_polkit_dialog};
+use dialog::{DialogResult, show_target_session_dialog};
 #[cfg(coverage)]
 use peercred_ipc::CallerInfo;
 #[cfg(not(coverage))]
 use peercred_ipc::{CallerInfo, Connection, ConnectionReader, ConnectionWriter, IpcError, Server};
+use session::validate_confirm_session;
 use std::collections::HashMap;
 #[cfg(not(coverage))]
 use std::future::Future;
@@ -141,6 +144,10 @@ async fn handle_connection(conn: Connection, caller: CallerInfo, state: Arc<AppS
         }
         DaemonRequest::Polkit(request) => {
             let response = handle_polkit(&caller, &request, &state, &trace);
+            complete_response(reader, writer, response, &trace).await;
+        }
+        DaemonRequest::ConfirmSession(request) => {
+            let response = confirm_session_response(&caller, &request, &trace);
             complete_response(reader, writer, response, &trace).await;
         }
     }
@@ -280,7 +287,54 @@ async fn process_request(
     }
 }
 
+async fn confirm_session_response(
+    caller: &CallerInfo,
+    request: &ConfirmSessionRequest,
+    trace: &RequestTrace,
+) -> ConfirmSessionResponse {
+    if !is_trusted_confirm_consumer(caller)
+        || caller.exe != std::path::Path::new("/usr/bin/secrets-broker")
+    {
+        return ConfirmSessionResponse::Denied {
+            reason: "caller is not the trusted Secrets Broker".into(),
+        };
+    }
+
+    let session = match validate_confirm_session(request) {
+        Ok(session) => session,
+        Err(error) => {
+            return ConfirmSessionResponse::Denied {
+                reason: error.to_string(),
+            };
+        }
+    };
+
+    let result = show_target_session_dialog(
+        session.uid,
+        session.gid,
+        &session.env,
+        &request.title,
+        &request.message,
+        &request.detail,
+        trace,
+    )
+    .await;
+    match result {
+        DialogResult::Confirmed => ConfirmSessionResponse::Confirmed,
+        DialogResult::Denied => ConfirmSessionResponse::Denied {
+            reason: "user denied confirmation".into(),
+        },
+        DialogResult::Error => ConfirmSessionResponse::Error {
+            message: "failed to show target-session confirmation dialog".into(),
+        },
+    }
+}
+
 fn is_trusted_confirm_consumer(caller: &CallerInfo) -> bool {
+    if caller.exe == std::path::Path::new("/usr/bin/secrets-broker") {
+        return true;
+    }
+
     caller
         .exe
         .file_name()
@@ -428,16 +482,14 @@ mod tests {
     }
 
     #[cfg(not(coverage))]
-    fn confirmation_request() -> DaemonRequest {
-        DaemonRequest::Exec(AuthRequest {
-            target: PathBuf::from("/usr/bin/true"),
-            args: Vec::new(),
-            env: HashMap::new(),
-            password: String::new(),
-            confirm_only: true,
-            prompt_title: None,
-            prompt_message: None,
-            prompt_detail: None,
+    fn confirm_session_request() -> DaemonRequest {
+        DaemonRequest::ConfirmSession(ConfirmSessionRequest {
+            pi_pid: 4242,
+            pi_start_time: 987_654,
+            target_uid: 1000,
+            title: "Secrets Broker".into(),
+            message: "Unlock credentials?".into(),
+            detail: "mysql-gc:prod-ro".into(),
         })
     }
 
@@ -447,7 +499,7 @@ mod tests {
         stream
             .set_read_timeout(Some(Duration::from_millis(50)))
             .unwrap();
-        let request = rmp_serde::to_vec(&confirmation_request()).unwrap();
+        let request = rmp_serde::to_vec(&confirm_session_request()).unwrap();
         stream.write_all(&request).unwrap();
 
         let mut response = [0u8; 1];
@@ -493,7 +545,7 @@ mod tests {
 
     #[cfg(not(coverage))]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn caller_disconnect_cancels_inflight_response() {
+    async fn confirm_session_disconnect_cancels_inflight_dialog() {
         let socket_path = unique_socket_path();
         let server = Server::bind(&socket_path).unwrap();
         let cancelled = Arc::new(AtomicBool::new(false));
@@ -505,7 +557,7 @@ mod tests {
             let _: DaemonRequest = reader.read().await.unwrap();
             let response = async move {
                 let _probe = DropProbe(server_cancelled);
-                std::future::pending::<AuthResponse>().await
+                std::future::pending::<ConfirmSessionResponse>().await
             };
 
             let result = await_response_or_disconnect(&mut reader, response).await;
@@ -525,6 +577,24 @@ mod tests {
         let _ = std::fs::remove_file(socket_path);
     }
 
+    #[tokio::test]
+    async fn confirm_session_rejects_untrusted_consumer() {
+        let trace = RequestTrace::new();
+        let request = ConfirmSessionRequest {
+            pi_pid: 4242,
+            pi_start_time: 987_654,
+            target_uid: 1000,
+            title: "Secrets Broker".into(),
+            message: "Unlock credentials?".into(),
+            detail: "mysql-gc:prod-ro".into(),
+        };
+
+        let response =
+            confirm_session_response(&caller("/tmp/secrets-broker", 1000), &request, &trace).await;
+
+        assert!(matches!(response, ConfirmSessionResponse::Denied { .. }));
+    }
+
     #[test]
     fn trusted_confirm_consumers_are_named_tools() {
         assert!(is_trusted_confirm_consumer(&caller(
@@ -533,6 +603,14 @@ mod tests {
         )));
         assert!(is_trusted_confirm_consumer(&caller(
             "/opt/bin/config-guard",
+            1000
+        )));
+        assert!(is_trusted_confirm_consumer(&caller(
+            "/usr/bin/secrets-broker",
+            981
+        )));
+        assert!(!is_trusted_confirm_consumer(&caller(
+            "/tmp/secrets-broker",
             1000
         )));
         assert!(!is_trusted_confirm_consumer(&caller("/usr/bin/curl", 1000)));
