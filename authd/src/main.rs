@@ -5,7 +5,7 @@ use authd_protocol::{AuthRequest, AuthResponse};
 #[cfg(not(coverage))]
 use authd_protocol::{DaemonRequest, PolkitReply, PolkitRequest, SOCKET_PATH};
 #[cfg(not(coverage))]
-use dialog::{DialogResult, show_confirmation_dialog, show_polkit_dialog};
+use dialog::{ConfirmationPrompt, DialogResult, show_confirmation_dialog, show_polkit_dialog};
 #[cfg(coverage)]
 use peercred_ipc::CallerInfo;
 #[cfg(not(coverage))]
@@ -319,9 +319,11 @@ async fn confirmation_response(
         &request.target,
         &request.args,
         &request.env,
-        request.prompt_title.as_deref(),
-        request.prompt_message.as_deref(),
-        request.prompt_detail.as_deref(),
+        ConfirmationPrompt {
+            title: request.prompt_title.as_deref(),
+            message: request.prompt_message.as_deref(),
+            detail: request.prompt_detail.as_deref(),
+        },
         trace,
     )
     .await;

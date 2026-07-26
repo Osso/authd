@@ -8,6 +8,8 @@ use session_dialog::DialogKind;
 #[cfg(not(coverage))]
 use session_dialog::{DialogConfig, DialogResult as SdResult, spawn_dialog};
 use std::collections::HashMap;
+use std::path::Path;
+#[cfg(test)]
 use std::path::PathBuf;
 #[cfg(not(coverage))]
 use std::time::Duration;
@@ -24,50 +26,43 @@ pub enum DialogResult {
     Error,
 }
 
+/// Optional text overriding the default privilege-escalation prompt.
+pub struct ConfirmationPrompt<'a> {
+    pub title: Option<&'a str>,
+    pub message: Option<&'a str>,
+    pub detail: Option<&'a str>,
+}
+
 /// Show a confirmation dialog using session-dialog
 ///
-/// Runs the dialog inline (no fork) with the caller's Wayland env vars.
+/// Spawns the dialog with the caller's identity and Wayland environment.
 /// The dialog locks the session and shows a confirmation prompt.
 pub async fn show_confirmation_dialog(
     caller: &CallerInfo,
-    target: &PathBuf,
+    target: &Path,
     args: &[String],
     env: &HashMap<String, String>,
-    prompt_title: Option<&str>,
-    prompt_message: Option<&str>,
-    prompt_detail: Option<&str>,
+    prompt: ConfirmationPrompt<'_>,
     trace: &RequestTrace,
 ) -> DialogResult {
     if !has_reachable_session_env(env) {
         return DialogResult::Error;
     }
 
-    show_confirmation_dialog_with_session_env(
-        caller,
-        target,
-        args,
-        env,
-        prompt_title,
-        prompt_message,
-        prompt_detail,
-        trace,
-    )
-    .await
+    show_confirmation_dialog_with_session_env(caller, target, args, env, prompt, trace).await
 }
 
 #[cfg(not(coverage))]
 async fn show_confirmation_dialog_with_session_env(
     caller: &CallerInfo,
-    target: &PathBuf,
+    target: &Path,
     args: &[String],
     env: &HashMap<String, String>,
-    prompt_title: Option<&str>,
-    prompt_message: Option<&str>,
-    prompt_detail: Option<&str>,
+    prompt: ConfirmationPrompt<'_>,
     trace: &RequestTrace,
 ) -> DialogResult {
     let config = DialogConfig {
-        kind: dialog_kind(target, args, prompt_title, prompt_message, prompt_detail),
+        kind: dialog_kind(target, args, prompt),
         timeout_secs: Some(30),
     };
 
@@ -77,26 +72,18 @@ async fn show_confirmation_dialog_with_session_env(
 #[cfg(coverage)]
 async fn show_confirmation_dialog_with_session_env(
     _caller: &CallerInfo,
-    target: &PathBuf,
+    target: &Path,
     args: &[String],
     _env: &HashMap<String, String>,
-    prompt_title: Option<&str>,
-    prompt_message: Option<&str>,
-    prompt_detail: Option<&str>,
+    prompt: ConfirmationPrompt<'_>,
     _trace: &RequestTrace,
 ) -> DialogResult {
-    let _ = dialog_kind(target, args, prompt_title, prompt_message, prompt_detail);
+    let _ = dialog_kind(target, args, prompt);
     DialogResult::Error
 }
 
-fn dialog_kind(
-    target: &PathBuf,
-    args: &[String],
-    prompt_title: Option<&str>,
-    prompt_message: Option<&str>,
-    prompt_detail: Option<&str>,
-) -> DialogKind {
-    match (prompt_title, prompt_message, prompt_detail) {
+fn dialog_kind(target: &Path, args: &[String], prompt: ConfirmationPrompt<'_>) -> DialogKind {
+    match (prompt.title, prompt.message, prompt.detail) {
         (Some(title), Some(message), Some(detail)) => DialogKind::Generic {
             title: title.to_string(),
             message: message.to_string(),
@@ -108,7 +95,7 @@ fn dialog_kind(
     }
 }
 
-fn command_text(target: &PathBuf, args: &[String]) -> String {
+fn command_text(target: &Path, args: &[String]) -> String {
     if args.is_empty() {
         target.to_string_lossy().to_string()
     } else {
@@ -282,9 +269,11 @@ mod tests {
                 &PathBuf::from("/usr/bin/id"),
                 &["-u".to_string()],
                 &env,
-                Some("Title"),
-                Some("Message"),
-                Some("Detail"),
+                ConfirmationPrompt {
+                    title: Some("Title"),
+                    message: Some("Message"),
+                    detail: Some("Detail"),
+                },
                 &trace,
             )
             .await,
@@ -313,9 +302,11 @@ mod tests {
             &PathBuf::from("/usr/bin/id"),
             &["-u".to_string()],
             &HashMap::new(),
-            None,
-            None,
-            None,
+            ConfirmationPrompt {
+                title: None,
+                message: None,
+                detail: None,
+            },
             &trace,
         )
         .await;
@@ -328,9 +319,11 @@ mod tests {
         let kind = dialog_kind(
             &PathBuf::from("/usr/bin/id"),
             &["-u".to_string()],
-            Some("Title"),
-            Some("Message"),
-            Some("Detail"),
+            ConfirmationPrompt {
+                title: Some("Title"),
+                message: Some("Message"),
+                detail: Some("Detail"),
+            },
         );
 
         match kind {
@@ -352,9 +345,11 @@ mod tests {
         let kind = dialog_kind(
             &PathBuf::from("/usr/bin/id"),
             &["-u".to_string(), "root".to_string()],
-            None,
-            None,
-            None,
+            ConfirmationPrompt {
+                title: None,
+                message: None,
+                detail: None,
+            },
         );
 
         match kind {
