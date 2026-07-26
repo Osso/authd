@@ -26,7 +26,7 @@ A minimal privilege escalation daemon for Wayland, designed as a polkit replacem
 ## Components
 
 ### authd (daemon)
-Root daemon listening on `/run/authd.sock`. Receives auth requests, checks policies, and spawns processes via `systemd-run --scope`.
+Root daemon listening on `/run/authd.sock`. Receives auth requests, checks policies, and spawns processes via `systemd-run --scope`. Confirmation requests run in a separate `session-dialog` child process. If the client disconnects before the decision, authd cancels and reaps that child without writing a response to the closed socket.
 
 ### authctl (GUI client)
 Wayland layer-shell dialog for authorization. Shows command to run, handles user confirmation. Uses iced with Ayu Dark theme.
@@ -53,6 +53,30 @@ Shared policy engine used by both authd and authsudo.
 
 ### authd-protocol (library)
 Shared types for daemon communication (AuthRequest, AuthResponse, PolicyRule).
+
+## Operational behavior
+
+### Confirmation cancellation
+
+Authd monitors the caller connection while a confirmation is pending. A caller disconnect cancels the pending confirmation, terminates and reaps the `session-dialog` child, and skips the response write. This prevents stale dialogs from surviving a timed-out client request.
+
+### Request-correlated diagnostics
+
+Authd assigns each request a `request_id` and logs monotonic `elapsed_ms` values for connection acceptance, request decoding, operation start/completion, dialog spawn/completion, response writes, and caller disconnects. The child `session-dialog` process receives the same ID and logs its own startup, config decoding, application startup, and UI return stages. Inspect system logs with:
+
+```bash
+journalctl -u authd
+```
+
+### Deployment
+
+Use the repository deployment script:
+
+```bash
+./deploy.sh
+```
+
+It builds with `--locked`, installs the authd binaries and service files, reloads/restarts the system `authd.service`, and reloads/restarts the current user's `authd-polkit-agent.service`. The separate `session-dialog` project must already have installed `/usr/bin/session-dialog`; authd launches that binary for confirmation dialogs.
 
 ## Policy Configuration
 
@@ -108,6 +132,8 @@ makepkg -si
 ```
 
 ### Manual
+
+The canonical deployment path is `./deploy.sh`; it also restarts both authd services. For manual installation:
 
 ```bash
 cargo build --release
