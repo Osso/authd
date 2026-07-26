@@ -52,7 +52,22 @@ setuid `polkit-agent-helper-1`). Enable the shipped user unit with
 Shared policy engine used by both authd and authsudo.
 
 ### authd-protocol (library)
-Shared types for daemon communication (AuthRequest, AuthResponse, PolicyRule).
+Shared types for daemon communication (AuthRequest, AuthResponse, ConfirmSessionRequest, ConfirmSessionResponse, PolicyRule).
+
+## Secrets Broker confirmation
+
+The Secrets Broker may request a confirmation for a specific Pi session by sending a `ConfirmSessionRequest` to authd. Only a caller whose socket executable is exactly `/usr/bin/secrets-broker` is accepted for this flow.
+
+Authd independently validates the claimed Pi process before showing the dialog:
+
+- PID still exists and its `/proc/<pid>/stat` start time matches the request
+- `/proc/<pid>/exe` is `pi` or `pi-dev`
+- process UID matches the requested target UID
+- `WAYLAND_DISPLAY` and `XDG_RUNTIME_DIR` are present in the Pi process environment
+- the runtime directory is owned by the target UID
+- the process start time still matches after validation
+
+The dialog is launched as the validated target UID/GID with the validated session environment. The response is `Confirmed`, `Denied`, or `Error`. Disconnecting the broker while confirmation is pending cancels and reaps the dialog process without sending a response.
 
 ## Operational behavior
 
