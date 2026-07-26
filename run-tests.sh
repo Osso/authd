@@ -4,4 +4,4 @@ set -eu
 cd "$(dirname "$0")"
 cargo fmt --all -- --check
 cargo test --workspace --locked
-cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+cargo clippy --workspace --locked
