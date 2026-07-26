@@ -21,4 +21,12 @@ authsudo sh -c '
     systemctl restart authd
 '
 
+user_runtime_dir="/run/user/$(id -u)"
+XDG_RUNTIME_DIR="$user_runtime_dir" \
+DBUS_SESSION_BUS_ADDRESS="unix:path=$user_runtime_dir/bus" \
+    systemctl --user daemon-reload
+XDG_RUNTIME_DIR="$user_runtime_dir" \
+DBUS_SESSION_BUS_ADDRESS="unix:path=$user_runtime_dir/bus" \
+    systemctl --user restart authd-polkit-agent.service
+
 systemctl status authd --no-pager -n 0 | head -4
