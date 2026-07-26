@@ -50,8 +50,7 @@ fn validate_confirm_session_at(
         return Err(SessionValidationError::UidMismatch);
     }
 
-    let env = read_session_environment(&process_dir)?;
-    validate_runtime_directory_owner(&env, uid)?;
+    let env = find_pi_session_environment(proc_root, request.pi_pid, uid)?;
 
     let final_start_time = read_start_time(&process_dir)?;
     if final_start_time != initial_start_time {
@@ -62,16 +61,67 @@ fn validate_confirm_session_at(
 }
 
 fn read_start_time(process_dir: &Path) -> Result<u64, SessionValidationError> {
+    read_process_stat(process_dir).map(|(_, start_time)| start_time)
+}
+
+fn read_process_stat(process_dir: &Path) -> Result<(u32, u64), SessionValidationError> {
     let stat = fs::read_to_string(process_dir.join("stat"))
         .map_err(|_| SessionValidationError::ProcessUnavailable)?;
     let command_end = stat
         .rfind(") ")
         .ok_or(SessionValidationError::ProcessUnavailable)?;
-    stat[command_end + 2..]
+    let fields = stat[command_end + 2..]
         .split_whitespace()
-        .nth(19)
+        .collect::<Vec<_>>();
+    let parent_pid = fields
+        .get(1)
         .and_then(|value| value.parse().ok())
-        .ok_or(SessionValidationError::ProcessUnavailable)
+        .ok_or(SessionValidationError::ProcessUnavailable)?;
+    let start_time = fields
+        .get(19)
+        .and_then(|value| value.parse().ok())
+        .ok_or(SessionValidationError::ProcessUnavailable)?;
+    Ok((parent_pid, start_time))
+}
+
+fn find_pi_session_environment(
+    proc_root: &Path,
+    pi_pid: u32,
+    uid: u32,
+) -> Result<HashMap<String, String>, SessionValidationError> {
+    let mut current_pid = pi_pid;
+    for _ in 0..8 {
+        let process_dir = proc_root.join(current_pid.to_string());
+        match read_session_environment(&process_dir) {
+            Ok(env) => {
+                validate_runtime_directory_owner(&env, uid)?;
+                return Ok(env);
+            }
+            Err(SessionValidationError::MissingSessionEnvironment) => {}
+            Err(error) => return Err(error),
+        }
+
+        let (parent_pid, _) = read_process_stat(&process_dir)?;
+        if parent_pid == 0 || parent_pid == current_pid {
+            break;
+        }
+        let parent_dir = proc_root.join(parent_pid.to_string());
+        match validate_pi_executable(&parent_dir) {
+            Ok(()) => {}
+            Err(
+                SessionValidationError::NotPiProcess | SessionValidationError::ProcessUnavailable,
+            ) => {
+                break;
+            }
+            Err(error) => return Err(error),
+        }
+        let (parent_uid, _) = read_process_ids(&parent_dir)?;
+        if parent_uid != uid {
+            return Err(SessionValidationError::UidMismatch);
+        }
+        current_pid = parent_pid;
+    }
+    Err(SessionValidationError::MissingSessionEnvironment)
 }
 
 fn validate_pi_executable(process_dir: &Path) -> Result<(), SessionValidationError> {
@@ -209,7 +259,13 @@ mod tests {
     }
 
     fn stat(pid: u32, start_time: u64) -> String {
-        format!("{pid} (pi process) S 1 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 {start_time} 0 0")
+        stat_with_parent(pid, 1, start_time)
+    }
+
+    fn stat_with_parent(pid: u32, parent_pid: u32, start_time: u64) -> String {
+        format!(
+            "{pid} (pi process) S {parent_pid} 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 {start_time} 0 0"
+        )
     }
 
     #[test]
@@ -226,6 +282,42 @@ mod tests {
         assert_eq!(
             session.env.get("XDG_RUNTIME_DIR").map(Path::new),
             Some(fixture.runtime_dir.as_path())
+        );
+    }
+
+    #[test]
+    fn uses_parent_pi_session_for_detached_pi_runner() {
+        let fixture = ProcFixture::valid();
+        let parent_pid = 4241;
+        fs::write(
+            fixture.process_file("stat"),
+            stat_with_parent(fixture.pid, parent_pid, 987_654),
+        )
+        .unwrap();
+        fs::write(fixture.process_file("environ"), b"").unwrap();
+
+        let parent_dir = fixture.root.path().join(parent_pid.to_string());
+        fs::create_dir(&parent_dir).unwrap();
+        fs::write(parent_dir.join("stat"), stat(parent_pid, 123_456)).unwrap();
+        fs::write(
+            parent_dir.join("status"),
+            format!(
+                "Name:\tpi\nUid:\t{uid}\t{uid}\t{uid}\t{uid}\nGid:\t{uid}\t{uid}\t{uid}\t{uid}\n",
+                uid = fixture.uid
+            ),
+        )
+        .unwrap();
+        symlink(fixture.root.path().join("pi"), parent_dir.join("exe")).unwrap();
+        let environ = format!(
+            "WAYLAND_DISPLAY=wayland-1\0XDG_RUNTIME_DIR={}\0",
+            fixture.runtime_dir.display()
+        );
+        fs::write(parent_dir.join("environ"), environ.as_bytes()).unwrap();
+
+        let session = validate_confirm_session_at(fixture.root.path(), &fixture.request()).unwrap();
+        assert_eq!(
+            session.env.get("WAYLAND_DISPLAY").map(String::as_str),
+            Some("wayland-1")
         );
     }
 
