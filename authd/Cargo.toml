@@ -9,12 +9,13 @@ authors.workspace = true
 authd-protocol.workspace = true
 authd-policy.workspace = true
 peercred-ipc.workspace = true
+serde.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 anyhow = "1"
 zbus = { version = "5", default-features = false, features = ["tokio"] }
-session-dialog = { git = "https://github.com/Osso/session-dialog" }
+session-dialog = { git = "https://github.com/Osso/session-dialog", rev = "6a3a7752ff6d8928e8e184e9cde989eaf6b70a95" }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(coverage)'] }

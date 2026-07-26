@@ -9,10 +9,14 @@ use dialog::{DialogResult, show_confirmation_dialog, show_polkit_dialog};
 #[cfg(coverage)]
 use peercred_ipc::CallerInfo;
 #[cfg(not(coverage))]
-use peercred_ipc::{CallerInfo, Connection, Server};
+use peercred_ipc::{CallerInfo, Connection, ConnectionReader, ConnectionWriter, IpcError, Server};
 use std::collections::HashMap;
 #[cfg(not(coverage))]
+use std::future::Future;
+#[cfg(not(coverage))]
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Instant;
 #[cfg(not(coverage))]
 use tracing::{error, info};
 #[cfg(not(coverage))]
@@ -24,6 +28,39 @@ const PK_SERVICE: &str = "org.freedesktop.PolicyKit1";
 const PK_AUTHORITY_PATH: &str = "/org/freedesktop/PolicyKit1/Authority";
 #[cfg(not(coverage))]
 const PK_AUTHORITY_IFACE: &str = "org.freedesktop.PolicyKit1.Authority";
+
+static NEXT_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
+
+struct RequestTrace {
+    id: String,
+    started_at: Instant,
+}
+
+impl RequestTrace {
+    fn new() -> Self {
+        let sequence = NEXT_REQUEST_ID.fetch_add(1, Ordering::Relaxed);
+        Self {
+            id: format!("{}-{sequence}", std::process::id()),
+            started_at: Instant::now(),
+        }
+    }
+
+    fn id(&self) -> &str {
+        &self.id
+    }
+
+    fn log(&self, stage: &str) {
+        #[cfg(not(coverage))]
+        info!(
+            "request_id={} elapsed_ms={} stage={}",
+            self.id,
+            self.started_at.elapsed().as_millis(),
+            stage
+        );
+        #[cfg(coverage)]
+        let _ = stage;
+    }
+}
 
 struct AppState {
     policy: PolicyEngine,
@@ -70,17 +107,23 @@ async fn main() -> anyhow::Result<()> {
 fn main() {}
 
 #[cfg(not(coverage))]
-async fn handle_connection(mut conn: Connection, caller: CallerInfo, state: Arc<AppState>) {
+async fn handle_connection(conn: Connection, caller: CallerInfo, state: Arc<AppState>) {
+    let trace = RequestTrace::new();
+    trace.log("connection_accepted");
     info!(
-        "connection from uid={} pid={} exe={:?}",
-        caller.uid, caller.pid, caller.exe
+        "request_id={} caller_uid={} caller_pid={} caller_exe={:?}",
+        trace.id(),
+        caller.uid,
+        caller.pid,
+        caller.exe
     );
 
-    let request: DaemonRequest = match conn.read().await {
-        Ok(r) => r,
-        Err(e) => {
-            error!("{}", e);
-            let _ = conn
+    let (mut reader, mut writer) = conn.split();
+    let request: DaemonRequest = match reader.read().await {
+        Ok(request) => request,
+        Err(error) => {
+            error!("request_id={} invalid request: {}", trace.id(), error);
+            let _ = writer
                 .write(&AuthResponse::Error {
                     message: "invalid request".into(),
                 })
@@ -88,16 +131,64 @@ async fn handle_connection(mut conn: Connection, caller: CallerInfo, state: Arc<
             return;
         }
     };
+    trace.log("request_decoded");
 
+    trace.log("operation_started");
     match request {
         DaemonRequest::Exec(request) => {
-            let response = process_request(&caller, &request, &state).await;
-            let _ = conn.write(&response).await;
+            let response = process_request(&caller, &request, &state, &trace);
+            complete_response(reader, writer, response, &trace).await;
         }
         DaemonRequest::Polkit(request) => {
-            let response = handle_polkit(&caller, &request, &state).await;
-            let _ = conn.write(&response).await;
+            let response = handle_polkit(&caller, &request, &state, &trace);
+            complete_response(reader, writer, response, &trace).await;
         }
+    }
+}
+
+#[cfg(not(coverage))]
+async fn complete_response<T>(
+    mut reader: ConnectionReader,
+    mut writer: ConnectionWriter,
+    response: impl Future<Output = T>,
+    trace: &RequestTrace,
+) where
+    T: serde::Serialize,
+{
+    match await_response_or_disconnect(&mut reader, response).await {
+        Ok(Some(response)) => {
+            trace.log("operation_completed");
+            let stage = if writer.write(&response).await.is_ok() {
+                "response_written"
+            } else {
+                "response_write_failed"
+            };
+            trace.log(stage);
+        }
+        Ok(None) => trace.log("caller_disconnected"),
+        Err(error) => log_disconnect_monitor_error(trace, error),
+    }
+}
+
+#[cfg(not(coverage))]
+fn log_disconnect_monitor_error(trace: &RequestTrace, error: IpcError) {
+    error!(
+        "request_id={} disconnect monitoring failed: {}",
+        trace.id(),
+        error
+    );
+}
+
+#[cfg(not(coverage))]
+async fn await_response_or_disconnect<T>(
+    reader: &mut ConnectionReader,
+    response: impl Future<Output = T>,
+) -> Result<Option<T>, IpcError> {
+    tokio::pin!(response);
+    tokio::select! {
+        biased;
+        disconnect = reader.wait_for_disconnect() => disconnect.map(|()| None),
+        response = &mut response => Ok(Some(response)),
     }
 }
 
@@ -108,13 +199,22 @@ async fn handle_polkit(
     caller: &CallerInfo,
     request: &PolkitRequest,
     state: &AppState,
+    trace: &RequestTrace,
 ) -> PolkitReply {
     info!(
         "polkit request: action={} uid={} agent_uid={}",
         request.action_id, request.uid, caller.uid
     );
 
-    match show_polkit_dialog(&request.message, &request.action_id, &request.env) {
+    match show_polkit_dialog(
+        caller,
+        &request.message,
+        &request.action_id,
+        &request.env,
+        trace,
+    )
+    .await
+    {
         DialogResult::Confirmed => match assert_polkit_response(state, request).await {
             Ok(()) => {
                 info!("polkit response asserted for {}", request.action_id);
@@ -159,15 +259,15 @@ async fn process_request(
     caller: &CallerInfo,
     request: &AuthRequest,
     state: &AppState,
+    trace: &RequestTrace,
 ) -> AuthResponse {
-    info!("auth request: target={:?}", request.target);
+    info!("request_id={} auth target={:?}", trace.id(), request.target);
     if request.confirm_only && is_trusted_confirm_consumer(caller) {
-        return confirmation_response(caller, request);
+        return confirmation_response(caller, request, trace).await;
     }
 
-    match policy_response(caller, request, state) {
-        Some(response) => return response,
-        None => {}
+    if let Some(response) = policy_response(caller, request, state, trace).await {
+        return response;
     }
 
     if request.confirm_only {
@@ -188,10 +288,11 @@ fn is_trusted_confirm_consumer(caller: &CallerInfo) -> bool {
         .is_some_and(|name| matches!(name, "authsudo" | "config-guard"))
 }
 
-fn policy_response(
+async fn policy_response(
     caller: &CallerInfo,
     request: &AuthRequest,
     state: &AppState,
+    trace: &RequestTrace,
 ) -> Option<AuthResponse> {
     let decision = state
         .policy
@@ -201,12 +302,18 @@ fn policy_response(
         PolicyDecision::Unknown => Some(AuthResponse::UnknownTarget),
         PolicyDecision::Denied(reason) => Some(AuthResponse::Denied { reason }),
         PolicyDecision::AllowImmediate => None,
-        PolicyDecision::AllowWithConfirm => confirmation_response(caller, request).into_error(),
+        PolicyDecision::AllowWithConfirm => confirmation_response(caller, request, trace)
+            .await
+            .into_error(),
     }
 }
 
 #[cfg(not(coverage))]
-fn confirmation_response(caller: &CallerInfo, request: &AuthRequest) -> AuthResponse {
+async fn confirmation_response(
+    caller: &CallerInfo,
+    request: &AuthRequest,
+    trace: &RequestTrace,
+) -> AuthResponse {
     let result = show_confirmation_dialog(
         caller,
         &request.target,
@@ -215,7 +322,9 @@ fn confirmation_response(caller: &CallerInfo, request: &AuthRequest) -> AuthResp
         request.prompt_title.as_deref(),
         request.prompt_message.as_deref(),
         request.prompt_detail.as_deref(),
-    );
+        trace,
+    )
+    .await;
     match result {
         DialogResult::Confirmed => {
             info!("user confirmed");
@@ -231,7 +340,11 @@ fn confirmation_response(caller: &CallerInfo, request: &AuthRequest) -> AuthResp
 }
 
 #[cfg(coverage)]
-fn confirmation_response(_caller: &CallerInfo, _request: &AuthRequest) -> AuthResponse {
+async fn confirmation_response(
+    _caller: &CallerInfo,
+    _request: &AuthRequest,
+    _trace: &RequestTrace,
+) -> AuthResponse {
     AuthResponse::Error {
         message: "confirmation dialog unavailable in coverage build".into(),
     }
@@ -278,7 +391,51 @@ mod tests {
     use super::*;
     #[cfg(coverage)]
     use authd_protocol::{AuthRequirement, PolicyRule};
+    #[cfg(not(coverage))]
+    use peercred_ipc::{Client, IpcError};
     use std::path::PathBuf;
+    #[cfg(not(coverage))]
+    use std::sync::Arc;
+    #[cfg(not(coverage))]
+    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    #[cfg(not(coverage))]
+    use std::time::Duration;
+
+    #[cfg(not(coverage))]
+    static SOCKET_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    #[cfg(not(coverage))]
+    struct DropProbe(Arc<AtomicBool>);
+
+    #[cfg(not(coverage))]
+    impl Drop for DropProbe {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::SeqCst);
+        }
+    }
+
+    #[cfg(not(coverage))]
+    fn unique_socket_path() -> String {
+        let id = SOCKET_COUNTER.fetch_add(1, Ordering::SeqCst);
+        format!(
+            "/tmp/authd-disconnect-test-{}-{id}.sock",
+            std::process::id()
+        )
+    }
+
+    #[cfg(not(coverage))]
+    fn confirmation_request() -> DaemonRequest {
+        DaemonRequest::Exec(AuthRequest {
+            target: PathBuf::from("/usr/bin/true"),
+            args: Vec::new(),
+            env: HashMap::new(),
+            password: String::new(),
+            confirm_only: true,
+            prompt_title: None,
+            prompt_message: None,
+            prompt_detail: None,
+        })
+    }
 
     fn caller(exe: &str, uid: u32) -> CallerInfo {
         CallerInfo {
@@ -317,6 +474,46 @@ mod tests {
         AppState { policy }
     }
 
+    #[cfg(not(coverage))]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn caller_disconnect_cancels_inflight_response() {
+        let socket_path = unique_socket_path();
+        let server = Server::bind(&socket_path).unwrap();
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let server_cancelled = Arc::clone(&cancelled);
+
+        let server_task = tokio::spawn(async move {
+            let (connection, _) = server.accept().await.unwrap();
+            let (mut reader, _writer) = connection.split();
+            let _: DaemonRequest = reader.read().await.unwrap();
+            let response = async move {
+                let _probe = DropProbe(server_cancelled);
+                std::future::pending::<AuthResponse>().await
+            };
+
+            let result = await_response_or_disconnect(&mut reader, response).await;
+            assert!(matches!(result, Ok(None)));
+        });
+
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        let client_path = socket_path.clone();
+        let client_task = tokio::task::spawn_blocking(move || {
+            Client::call_timeout::<_, DaemonRequest, AuthResponse>(
+                client_path,
+                &confirmation_request(),
+                Duration::from_millis(50),
+            )
+        });
+
+        assert!(matches!(
+            client_task.await.unwrap(),
+            Err(IpcError::Timeout(_))
+        ));
+        server_task.await.unwrap();
+        assert!(cancelled.load(Ordering::SeqCst));
+        let _ = std::fs::remove_file(socket_path);
+    }
+
     #[test]
     fn trusted_confirm_consumers_are_named_tools() {
         assert!(is_trusted_confirm_consumer(&caller(
@@ -331,8 +528,9 @@ mod tests {
     }
 
     #[cfg(coverage)]
-    #[test]
-    fn policy_response_maps_terminal_decisions() {
+    #[tokio::test]
+    async fn policy_response_maps_terminal_decisions() {
+        let trace = RequestTrace::new();
         let unknown = AppState {
             policy: PolicyEngine::new(),
         };
@@ -340,8 +538,10 @@ mod tests {
             policy_response(
                 &caller("/usr/bin/authsudo", 1000),
                 &request("/usr/bin/none"),
-                &unknown
-            ),
+                &unknown,
+                &trace,
+            )
+            .await,
             Some(AuthResponse::UnknownTarget)
         ));
 
@@ -350,8 +550,10 @@ mod tests {
             policy_response(
                 &caller("/usr/bin/authsudo", 1000),
                 &request("/usr/bin/id"),
-                &deny
-            ),
+                &deny,
+                &trace,
+            )
+            .await,
             Some(AuthResponse::Denied { .. })
         ));
 
@@ -360,8 +562,10 @@ mod tests {
             policy_response(
                 &caller("/usr/bin/authsudo", 1000),
                 &request("/usr/bin/id"),
-                &allow
+                &allow,
+                &trace,
             )
+            .await
             .is_none()
         );
     }

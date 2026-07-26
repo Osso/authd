@@ -139,7 +139,7 @@ name = "authctl"
 version = "0.1.0"
 dependencies = [
  "authd-protocol",
- "peercred-ipc",
+ "peercred-ipc 0.1.0 (git+https://github.com/Osso/peercred-ipc?rev=e13de318cef7d89a4dcdc6df637d9093b540b531)",
 ]
 
 [[package]]
@@ -149,7 +149,8 @@ dependencies = [
  "anyhow",
  "authd-policy",
  "authd-protocol",
- "peercred-ipc",
+ "peercred-ipc 0.1.0 (git+https://github.com/Osso/peercred-ipc?rev=e13de318cef7d89a4dcdc6df637d9093b540b531)",
+ "serde",
  "session-dialog",
  "tokio",
  "tracing",
@@ -182,7 +183,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "authd-protocol",
- "peercred-ipc",
+ "peercred-ipc 0.1.0 (git+https://github.com/Osso/peercred-ipc?rev=e13de318cef7d89a4dcdc6df637d9093b540b531)",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -206,7 +207,7 @@ dependencies = [
  "authd-policy",
  "authd-protocol",
  "libc",
- "peercred-ipc",
+ "peercred-ipc 0.1.0 (git+https://github.com/Osso/peercred-ipc)",
 ]
 
 [[package]]
@@ -2068,7 +2069,19 @@ checksum = "57c0d7b74b563b49d38dae00a0c37d4d6de9b432382b2892f0574ddcae73fd0a"
 [[package]]
 name = "peercred-ipc"
 version = "0.1.0"
-source = "git+https://github.com/Osso/peercred-ipc#7ee9ae26aed0313cd793ddfc51e0996cf15038e9"
+source = "git+https://github.com/Osso/peercred-ipc?rev=e13de318cef7d89a4dcdc6df637d9093b540b531#e13de318cef7d89a4dcdc6df637d9093b540b531"
+dependencies = [
+ "libc",
+ "rmp-serde",
+ "serde",
+ "thiserror 2.0.17",
+ "tokio",
+]
+
+[[package]]
+name = "peercred-ipc"
+version = "0.1.0"
+source = "git+https://github.com/Osso/peercred-ipc#e13de318cef7d89a4dcdc6df637d9093b540b531"
 dependencies = [
  "libc",
  "rmp-serde",
@@ -2439,7 +2452,7 @@ dependencies = [
 [[package]]
 name = "session-dialog"
 version = "0.1.0"
-source = "git+https://github.com/Osso/session-dialog#5aeadaec5c8c7e3f90dc7491031b4e8322655544"
+source = "git+https://github.com/Osso/session-dialog?rev=6a3a7752ff6d8928e8e184e9cde989eaf6b70a95#6a3a7752ff6d8928e8e184e9cde989eaf6b70a95"
 dependencies = [
  "iced",
  "iced_sessionlock",

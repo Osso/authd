@@ -2,14 +2,19 @@
 //!
 //! Shows a secure session-lock confirmation dialog via the session-dialog crate.
 
+use crate::RequestTrace;
 use peercred_ipc::CallerInfo;
 use session_dialog::DialogKind;
 #[cfg(not(coverage))]
-use session_dialog::{DialogConfig, DialogResult as SdResult};
+use session_dialog::{DialogConfig, DialogResult as SdResult, spawn_dialog};
 use std::collections::HashMap;
 use std::path::PathBuf;
+#[cfg(not(coverage))]
+use std::time::Duration;
 
 const REQUIRED_SESSION_ENV: &[&str] = &["WAYLAND_DISPLAY", "XDG_RUNTIME_DIR"];
+#[cfg(not(coverage))]
+const DIALOG_POLL_INTERVAL: Duration = Duration::from_millis(25);
 
 /// Result of showing the confirmation dialog
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -23,62 +28,62 @@ pub enum DialogResult {
 ///
 /// Runs the dialog inline (no fork) with the caller's Wayland env vars.
 /// The dialog locks the session and shows a confirmation prompt.
-pub fn show_confirmation_dialog(
-    _caller: &CallerInfo,
+pub async fn show_confirmation_dialog(
+    caller: &CallerInfo,
     target: &PathBuf,
     args: &[String],
     env: &HashMap<String, String>,
     prompt_title: Option<&str>,
     prompt_message: Option<&str>,
     prompt_detail: Option<&str>,
+    trace: &RequestTrace,
 ) -> DialogResult {
     if !has_reachable_session_env(env) {
         return DialogResult::Error;
     }
 
     show_confirmation_dialog_with_session_env(
+        caller,
         target,
         args,
         env,
         prompt_title,
         prompt_message,
         prompt_detail,
+        trace,
     )
+    .await
 }
 
 #[cfg(not(coverage))]
-fn show_confirmation_dialog_with_session_env(
+async fn show_confirmation_dialog_with_session_env(
+    caller: &CallerInfo,
     target: &PathBuf,
     args: &[String],
     env: &HashMap<String, String>,
     prompt_title: Option<&str>,
     prompt_message: Option<&str>,
     prompt_detail: Option<&str>,
+    trace: &RequestTrace,
 ) -> DialogResult {
     let config = DialogConfig {
         kind: dialog_kind(target, args, prompt_title, prompt_message, prompt_detail),
         timeout_secs: Some(30),
     };
 
-    // Run in separate thread to avoid tokio runtime conflicts
-    let handle = session_dialog::show_dialog_async(config, env.clone());
-    let result = handle.join().unwrap_or(SdResult::Error);
-
-    match result {
-        SdResult::Confirmed => DialogResult::Confirmed,
-        SdResult::Denied | SdResult::Timeout => DialogResult::Denied,
-        SdResult::Error => DialogResult::Error,
-    }
+    show_dialog_process(caller, config, env, trace).await
 }
 
 #[cfg(coverage)]
-fn show_confirmation_dialog_with_session_env(
+async fn show_confirmation_dialog_with_session_env(
+    _caller: &CallerInfo,
     target: &PathBuf,
     args: &[String],
     _env: &HashMap<String, String>,
     prompt_title: Option<&str>,
     prompt_message: Option<&str>,
     prompt_detail: Option<&str>,
+    _trace: &RequestTrace,
 ) -> DialogResult {
     let _ = dialog_kind(target, args, prompt_title, prompt_message, prompt_detail);
     DialogResult::Error
@@ -115,23 +120,27 @@ fn command_text(target: &PathBuf, args: &[String]) -> String {
 ///
 /// Uses polkit's own human-readable `message` as the prompt and the action id
 /// as the detail line. Allow/Deny only — no password entry.
-pub fn show_polkit_dialog(
+pub async fn show_polkit_dialog(
+    caller: &CallerInfo,
     message: &str,
     action_id: &str,
     env: &HashMap<String, String>,
+    trace: &RequestTrace,
 ) -> DialogResult {
     if !has_reachable_session_env(env) {
         return DialogResult::Error;
     }
 
-    show_polkit_dialog_with_session_env(message, action_id, env)
+    show_polkit_dialog_with_session_env(caller, message, action_id, env, trace).await
 }
 
 #[cfg(not(coverage))]
-fn show_polkit_dialog_with_session_env(
+async fn show_polkit_dialog_with_session_env(
+    caller: &CallerInfo,
     message: &str,
     action_id: &str,
     env: &HashMap<String, String>,
+    trace: &RequestTrace,
 ) -> DialogResult {
     let config = DialogConfig {
         kind: DialogKind::Generic {
@@ -142,19 +151,16 @@ fn show_polkit_dialog_with_session_env(
         timeout_secs: Some(30),
     };
 
-    let handle = session_dialog::show_dialog_async(config, env.clone());
-    match handle.join().unwrap_or(SdResult::Error) {
-        SdResult::Confirmed => DialogResult::Confirmed,
-        SdResult::Denied | SdResult::Timeout => DialogResult::Denied,
-        SdResult::Error => DialogResult::Error,
-    }
+    show_dialog_process(caller, config, env, trace).await
 }
 
 #[cfg(coverage)]
-fn show_polkit_dialog_with_session_env(
+async fn show_polkit_dialog_with_session_env(
+    _caller: &CallerInfo,
     message: &str,
     action_id: &str,
     _env: &HashMap<String, String>,
+    _trace: &RequestTrace,
 ) -> DialogResult {
     let _ = DialogKind::Generic {
         title: "Authorization Required".to_string(),
@@ -162,6 +168,41 @@ fn show_polkit_dialog_with_session_env(
         detail: action_id.to_string(),
     };
     DialogResult::Error
+}
+
+#[cfg(not(coverage))]
+async fn show_dialog_process(
+    caller: &CallerInfo,
+    config: DialogConfig,
+    env: &HashMap<String, String>,
+    trace: &RequestTrace,
+) -> DialogResult {
+    trace.log("dialog_spawn_requested");
+    let mut dialog = match spawn_dialog(&config, caller.uid, caller.gid, env, Some(trace.id())) {
+        Ok(dialog) => dialog,
+        Err(_) => return DialogResult::Error,
+    };
+    trace.log("dialog_spawned");
+
+    loop {
+        match dialog.try_wait() {
+            Ok(Some(result)) => {
+                trace.log("dialog_completed");
+                return map_dialog_result(result);
+            }
+            Ok(None) => tokio::time::sleep(DIALOG_POLL_INTERVAL).await,
+            Err(_) => return DialogResult::Error,
+        }
+    }
+}
+
+#[cfg(not(coverage))]
+fn map_dialog_result(result: SdResult) -> DialogResult {
+    match result {
+        SdResult::Confirmed => DialogResult::Confirmed,
+        SdResult::Denied | SdResult::Timeout | SdResult::Cancelled => DialogResult::Denied,
+        SdResult::Error => DialogResult::Error,
+    }
 }
 
 fn has_reachable_session_env(env: &HashMap<String, String>) -> bool {
@@ -199,20 +240,30 @@ mod tests {
         assert!(!has_reachable_session_env(&empty_display));
     }
 
-    #[test]
-    fn polkit_dialog_returns_error_without_session_env() {
+    #[tokio::test]
+    async fn polkit_dialog_returns_error_without_session_env() {
+        let caller = CallerInfo {
+            uid: 1000,
+            gid: 1000,
+            pid: 42,
+            exe: PathBuf::from("/usr/bin/authd-polkit-agent"),
+        };
+        let trace = RequestTrace::new();
         let result = show_polkit_dialog(
+            &caller,
             "Authentication is required.",
             "org.freedesktop.systemd1.manage-units",
             &HashMap::new(),
-        );
+            &trace,
+        )
+        .await;
 
         assert_eq!(result, DialogResult::Error);
     }
 
     #[cfg(coverage)]
-    #[test]
-    fn dialog_stubs_return_error_with_session_env() {
+    #[tokio::test]
+    async fn dialog_stubs_return_error_with_session_env() {
         let env = HashMap::from([
             ("WAYLAND_DISPLAY".to_string(), "wayland-1".to_string()),
             ("XDG_RUNTIME_DIR".to_string(), "/run/user/1000".to_string()),
@@ -224,6 +275,7 @@ mod tests {
             exe: PathBuf::from("/usr/bin/authsudo"),
         };
 
+        let trace = RequestTrace::new();
         assert_eq!(
             show_confirmation_dialog(
                 &caller,
@@ -233,19 +285,21 @@ mod tests {
                 Some("Title"),
                 Some("Message"),
                 Some("Detail"),
-            ),
+                &trace,
+            )
+            .await,
             DialogResult::Error
         );
         assert_eq!(
-            show_polkit_dialog("Message", "org.example.Action", &env),
+            show_polkit_dialog(&caller, "Message", "org.example.Action", &env, &trace).await,
             DialogResult::Error
         );
         assert_eq!(DialogResult::Confirmed, DialogResult::Confirmed);
         assert_eq!(DialogResult::Denied, DialogResult::Denied);
     }
 
-    #[test]
-    fn confirmation_dialog_returns_error_without_session_env() {
+    #[tokio::test]
+    async fn confirmation_dialog_returns_error_without_session_env() {
         let caller = CallerInfo {
             uid: 1000,
             gid: 1000,
@@ -253,6 +307,7 @@ mod tests {
             exe: PathBuf::from("/usr/bin/authsudo"),
         };
 
+        let trace = RequestTrace::new();
         let result = show_confirmation_dialog(
             &caller,
             &PathBuf::from("/usr/bin/id"),
@@ -261,7 +316,9 @@ mod tests {
             None,
             None,
             None,
-        );
+            &trace,
+        )
+        .await;
 
         assert_eq!(result, DialogResult::Error);
     }
