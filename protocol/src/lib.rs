@@ -70,6 +70,29 @@ pub enum DaemonRequest {
     Exec(AuthRequest),
     /// polkit agent forwarded a `BeginAuthentication`: confirm, then assert.
     Polkit(PolkitRequest),
+    /// Secrets Broker request confirmed in the target Pi user's session.
+    ConfirmSession(ConfirmSessionRequest),
+}
+
+/// Confirmation request from the dedicated Secrets Broker service.
+///
+/// Process and session fields are claims that authd must independently verify.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConfirmSessionRequest {
+    pub pi_pid: u32,
+    pub pi_start_time: u64,
+    pub target_uid: u32,
+    pub title: String,
+    pub message: String,
+    pub detail: String,
+}
+
+/// Result of a target-session confirmation request.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum ConfirmSessionResponse {
+    Confirmed,
+    Denied { reason: String },
+    Error { message: String },
 }
 
 /// A polkit `BeginAuthentication` forwarded from `authd-polkit-agent`.
@@ -212,6 +235,48 @@ mod tests {
         let encoded = rmp_serde::to_vec(&request).unwrap();
         let decoded: DaemonRequest = rmp_serde::from_slice(&encoded).unwrap();
         assert!(matches!(decoded, DaemonRequest::Exec(_)));
+    }
+
+    #[test]
+    fn confirm_session_request_roundtrip() {
+        let request = DaemonRequest::ConfirmSession(ConfirmSessionRequest {
+            pi_pid: 4242,
+            pi_start_time: 987_654,
+            target_uid: 1000,
+            title: "Secrets Broker".into(),
+            message: "Unlock database credentials?".into(),
+            detail: "mysql-gc:prod-ro".into(),
+        });
+
+        let encoded = rmp_serde::to_vec(&request).unwrap();
+        let decoded: DaemonRequest = rmp_serde::from_slice(&encoded).unwrap();
+
+        match decoded {
+            DaemonRequest::ConfirmSession(request) => {
+                assert_eq!(request.pi_pid, 4242);
+                assert_eq!(request.pi_start_time, 987_654);
+                assert_eq!(request.target_uid, 1000);
+                assert_eq!(request.detail, "mysql-gc:prod-ro");
+            }
+            other => panic!("expected ConfirmSession, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn confirm_session_response_roundtrip() {
+        for response in [
+            ConfirmSessionResponse::Confirmed,
+            ConfirmSessionResponse::Denied {
+                reason: "user denied".into(),
+            },
+            ConfirmSessionResponse::Error {
+                message: "target session unavailable".into(),
+            },
+        ] {
+            let encoded = rmp_serde::to_vec(&response).unwrap();
+            let decoded: ConfirmSessionResponse = rmp_serde::from_slice(&encoded).unwrap();
+            assert_eq!(format!("{decoded:?}"), format!("{response:?}"));
+        }
     }
 
     #[test]
