@@ -1,4 +1,4 @@
-use authd_protocol::{ConfirmSessionRequest, wayland_env};
+use authd_protocol::{ConfirmSessionRequest, ConfirmSessionTarget, wayland_env};
 use std::collections::HashMap;
 use std::fs;
 use std::os::unix::fs::MetadataExt;
@@ -8,6 +8,8 @@ use thiserror::Error;
 
 const MAX_PI_SESSION_ANCESTORS: usize = 8;
 const PROC_STAT_PARENT_PID_INDEX: usize = 1;
+const PROC_STAT_SESSION_ID_INDEX: usize = 3;
+const PROC_STAT_TTY_DEVICE_INDEX: usize = 4;
 const PROC_STAT_START_TIME_INDEX: usize = 19;
 const REQUIRED_SESSION_ENVIRONMENT: [&str; 2] = ["WAYLAND_DISPLAY", "XDG_RUNTIME_DIR"];
 
@@ -26,6 +28,14 @@ struct ValidatedTargetProcess {
     gid: u32,
 }
 
+#[derive(Debug)]
+struct ProcessStat {
+    parent_pid: u32,
+    session_id: u32,
+    tty_device: i64,
+    start_time: u64,
+}
+
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum SessionValidationError {
     #[error("target process is unavailable")]
@@ -36,6 +46,12 @@ pub enum SessionValidationError {
     UidMismatch,
     #[error("target process is not pi")]
     NotPiProcess,
+    #[error("terminal target is not the session leader")]
+    TerminalNotSessionLeader,
+    #[error("terminal target has no controlling tty")]
+    TerminalNoControllingTty,
+    #[error("terminal target controlling tty does not match claimed tty")]
+    TerminalTtyMismatch,
     #[error("target process has no reachable Wayland session")]
     MissingSessionEnvironment,
     #[error("runtime directory is not owned by target uid")]
@@ -52,8 +68,33 @@ fn validate_confirm_session_at(
     proc_root: &Path,
     request: &ConfirmSessionRequest,
 ) -> Result<ValidatedSession, SessionValidationError> {
-    let target = read_and_validate_target_process(proc_root, request)?;
-    let env = read_pi_session_environment(proc_root, request.pi_pid, target.uid)?;
+    let (target, env) = match &request.target {
+        ConfirmSessionTarget::Pi { pid, start_time } => {
+            let target = read_and_validate_pi_target_process(
+                proc_root,
+                *pid,
+                *start_time,
+                request.target_uid,
+            )?;
+            let env = read_pi_session_environment(proc_root, *pid, target.uid)?;
+            (target, env)
+        }
+        ConfirmSessionTarget::Terminal {
+            leader_pid,
+            leader_start_time,
+            tty_device,
+        } => {
+            let target = read_and_validate_terminal_target_process(
+                proc_root,
+                *leader_pid,
+                *leader_start_time,
+                *tty_device,
+                request.target_uid,
+            )?;
+            let env = read_terminal_session_environment(&target.process_dir, target.uid)?;
+            (target, env)
+        }
+    };
     ensure_process_start_time_unchanged(&target.process_dir, target.initial_start_time)?;
 
     Ok(ValidatedSession {
@@ -63,25 +104,62 @@ fn validate_confirm_session_at(
     })
 }
 
-fn read_and_validate_target_process(
+fn read_and_validate_pi_target_process(
     proc_root: &Path,
-    request: &ConfirmSessionRequest,
+    pid: u32,
+    start_time: u64,
+    target_uid: u32,
 ) -> Result<ValidatedTargetProcess, SessionValidationError> {
-    let process_dir = proc_root.join(request.pi_pid.to_string());
+    let process_dir = proc_root.join(pid.to_string());
     let initial_start_time = read_start_time(&process_dir)?;
-    if initial_start_time != request.pi_start_time {
+    if initial_start_time != start_time {
         return Err(SessionValidationError::StartTimeMismatch);
     }
 
     validate_pi_executable(&process_dir)?;
     let (uid, gid) = read_process_ids(&process_dir)?;
-    if uid != request.target_uid {
+    if uid != target_uid {
         return Err(SessionValidationError::UidMismatch);
     }
 
     Ok(ValidatedTargetProcess {
         process_dir,
         initial_start_time,
+        uid,
+        gid,
+    })
+}
+
+fn read_and_validate_terminal_target_process(
+    proc_root: &Path,
+    leader_pid: u32,
+    leader_start_time: u64,
+    tty_device: i64,
+    target_uid: u32,
+) -> Result<ValidatedTargetProcess, SessionValidationError> {
+    let process_dir = proc_root.join(leader_pid.to_string());
+    let stat = read_process_stat(&process_dir)?;
+    if stat.start_time != leader_start_time {
+        return Err(SessionValidationError::StartTimeMismatch);
+    }
+
+    let (uid, gid) = read_process_ids(&process_dir)?;
+    if uid != target_uid {
+        return Err(SessionValidationError::UidMismatch);
+    }
+    if stat.session_id != leader_pid {
+        return Err(SessionValidationError::TerminalNotSessionLeader);
+    }
+    if stat.tty_device == 0 || tty_device == 0 {
+        return Err(SessionValidationError::TerminalNoControllingTty);
+    }
+    if stat.tty_device != tty_device {
+        return Err(SessionValidationError::TerminalTtyMismatch);
+    }
+
+    Ok(ValidatedTargetProcess {
+        process_dir,
+        initial_start_time: stat.start_time,
         uid,
         gid,
     })
@@ -99,25 +177,28 @@ fn ensure_process_start_time_unchanged(
 }
 
 fn read_start_time(process_dir: &Path) -> Result<u64, SessionValidationError> {
-    read_process_stat(process_dir).map(|(_, start_time)| start_time)
+    read_process_stat(process_dir).map(|stat| stat.start_time)
 }
 
-fn read_process_stat(process_dir: &Path) -> Result<(u32, u64), SessionValidationError> {
+fn read_process_stat(process_dir: &Path) -> Result<ProcessStat, SessionValidationError> {
     let stat = fs::read_to_string(process_dir.join("stat"))
         .map_err(|_| SessionValidationError::ProcessUnavailable)?;
     parse_process_stat(&stat)
 }
 
-fn parse_process_stat(stat: &str) -> Result<(u32, u64), SessionValidationError> {
+fn parse_process_stat(stat: &str) -> Result<ProcessStat, SessionValidationError> {
     let command_end = stat
         .rfind(") ")
         .ok_or(SessionValidationError::ProcessUnavailable)?;
     let fields = stat[command_end + 2..]
         .split_whitespace()
         .collect::<Vec<_>>();
-    let parent_pid = parse_process_stat_field(&fields, PROC_STAT_PARENT_PID_INDEX)?;
-    let start_time = parse_process_stat_field(&fields, PROC_STAT_START_TIME_INDEX)?;
-    Ok((parent_pid, start_time))
+    Ok(ProcessStat {
+        parent_pid: parse_process_stat_field(&fields, PROC_STAT_PARENT_PID_INDEX)?,
+        session_id: parse_process_stat_field(&fields, PROC_STAT_SESSION_ID_INDEX)?,
+        tty_device: parse_process_stat_field(&fields, PROC_STAT_TTY_DEVICE_INDEX)?,
+        start_time: parse_process_stat_field(&fields, PROC_STAT_START_TIME_INDEX)?,
+    })
 }
 
 fn parse_process_stat_field<T>(fields: &[&str], index: usize) -> Result<T, SessionValidationError>
@@ -128,6 +209,15 @@ where
         .get(index)
         .and_then(|value| value.parse().ok())
         .ok_or(SessionValidationError::ProcessUnavailable)
+}
+
+fn read_terminal_session_environment(
+    process_dir: &Path,
+    uid: u32,
+) -> Result<HashMap<String, String>, SessionValidationError> {
+    let env = read_session_environment(process_dir)?;
+    validate_runtime_directory_owner(&env, uid)?;
+    Ok(env)
 }
 
 fn read_pi_session_environment(
@@ -171,7 +261,7 @@ fn read_same_uid_pi_parent(
     current_pid: u32,
     uid: u32,
 ) -> Result<Option<u32>, SessionValidationError> {
-    let (parent_pid, _) = read_process_stat(process_dir)?;
+    let parent_pid = read_process_stat(process_dir)?.parent_pid;
     if parent_pid == 0 || parent_pid == current_pid {
         return Ok(None);
     }
@@ -311,8 +401,24 @@ mod tests {
 
         fn request(&self) -> ConfirmSessionRequest {
             ConfirmSessionRequest {
-                pi_pid: self.pid,
-                pi_start_time: 987_654,
+                target: authd_protocol::ConfirmSessionTarget::Pi {
+                    pid: self.pid,
+                    start_time: 987_654,
+                },
+                target_uid: self.uid,
+                title: "Secrets Broker".into(),
+                message: "Unlock credentials?".into(),
+                detail: "mysql-gc:prod-ro".into(),
+            }
+        }
+
+        fn terminal_request(&self) -> ConfirmSessionRequest {
+            ConfirmSessionRequest {
+                target: authd_protocol::ConfirmSessionTarget::Terminal {
+                    leader_pid: self.pid,
+                    leader_start_time: 987_654,
+                    tty_device: 42,
+                },
                 target_uid: self.uid,
                 title: "Secrets Broker".into(),
                 message: "Unlock credentials?".into(),
@@ -326,13 +432,45 @@ mod tests {
     }
 
     fn stat(pid: u32, start_time: u64) -> String {
-        stat_with_parent(pid, 1, start_time)
+        stat_with_session(pid, 1, 0, 0, start_time)
     }
 
     fn stat_with_parent(pid: u32, parent_pid: u32, start_time: u64) -> String {
-        format!(
-            "{pid} (pi process) S {parent_pid} 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 {start_time} 0 0"
-        )
+        stat_with_session(pid, parent_pid, 0, 0, start_time)
+    }
+
+    fn stat_with_session(
+        pid: u32,
+        parent_pid: u32,
+        session_id: u32,
+        tty_device: i64,
+        start_time: u64,
+    ) -> String {
+        let fields = [
+            "S".to_string(),
+            parent_pid.to_string(),
+            "0".into(),
+            session_id.to_string(),
+            tty_device.to_string(),
+            "0".into(),
+            "0".into(),
+            "0".into(),
+            "0".into(),
+            "0".into(),
+            "0".into(),
+            "0".into(),
+            "0".into(),
+            "0".into(),
+            "0".into(),
+            "0".into(),
+            "0".into(),
+            "0".into(),
+            "0".into(),
+            start_time.to_string(),
+            "0".into(),
+            "0".into(),
+        ];
+        format!("{pid} (pi process) {}", fields.join(" "))
     }
 
     #[test]
@@ -389,10 +527,132 @@ mod tests {
     }
 
     #[test]
+    fn validates_matching_terminal_process_and_session() {
+        let fixture = ProcFixture::valid();
+        fs::write(
+            fixture.process_file("stat"),
+            stat_with_session(fixture.pid, 1, fixture.pid, 42, 987_654),
+        )
+        .unwrap();
+
+        let session =
+            validate_confirm_session_at(fixture.root.path(), &fixture.terminal_request()).unwrap();
+
+        assert_eq!(session.uid, fixture.uid);
+        assert_eq!(session.gid, fixture.uid);
+        assert_eq!(
+            session.env.get("WAYLAND_DISPLAY").map(String::as_str),
+            Some("wayland-1")
+        );
+    }
+
+    #[test]
+    fn rejects_terminal_start_time_mismatch() {
+        let fixture = ProcFixture::valid();
+        fs::write(
+            fixture.process_file("stat"),
+            stat_with_session(fixture.pid, 1, fixture.pid, 42, 987_654),
+        )
+        .unwrap();
+        let mut request = fixture.terminal_request();
+        if let authd_protocol::ConfirmSessionTarget::Terminal {
+            leader_start_time, ..
+        } = &mut request.target
+        {
+            *leader_start_time += 1;
+        }
+
+        assert!(matches!(
+            validate_confirm_session_at(fixture.root.path(), &request),
+            Err(SessionValidationError::StartTimeMismatch)
+        ));
+    }
+
+    #[test]
+    fn rejects_terminal_target_uid_mismatch() {
+        let fixture = ProcFixture::valid();
+        fs::write(
+            fixture.process_file("stat"),
+            stat_with_session(fixture.pid, 1, fixture.pid, 42, 987_654),
+        )
+        .unwrap();
+        let mut request = fixture.terminal_request();
+        request.target_uid += 1;
+
+        assert!(matches!(
+            validate_confirm_session_at(fixture.root.path(), &request),
+            Err(SessionValidationError::UidMismatch)
+        ));
+    }
+
+    #[test]
+    fn rejects_terminal_pid_that_is_not_session_leader() {
+        let fixture = ProcFixture::valid();
+        fs::write(
+            fixture.process_file("stat"),
+            stat_with_session(fixture.pid, 1, 1, 42, 987_654),
+        )
+        .unwrap();
+
+        assert!(matches!(
+            validate_confirm_session_at(fixture.root.path(), &fixture.terminal_request()),
+            Err(SessionValidationError::TerminalNotSessionLeader)
+        ));
+    }
+
+    #[test]
+    fn rejects_terminal_without_controlling_tty() {
+        let fixture = ProcFixture::valid();
+        fs::write(
+            fixture.process_file("stat"),
+            stat_with_session(fixture.pid, 1, fixture.pid, 0, 987_654),
+        )
+        .unwrap();
+
+        assert!(matches!(
+            validate_confirm_session_at(fixture.root.path(), &fixture.terminal_request()),
+            Err(SessionValidationError::TerminalNoControllingTty)
+        ));
+    }
+
+    #[test]
+    fn rejects_terminal_with_mismatched_controlling_tty() {
+        let fixture = ProcFixture::valid();
+        fs::write(
+            fixture.process_file("stat"),
+            stat_with_session(fixture.pid, 1, fixture.pid, 43, 987_654),
+        )
+        .unwrap();
+
+        assert!(matches!(
+            validate_confirm_session_at(fixture.root.path(), &fixture.terminal_request()),
+            Err(SessionValidationError::TerminalTtyMismatch)
+        ));
+    }
+
+    #[test]
+    fn rejects_terminal_missing_session_environment() {
+        let fixture = ProcFixture::valid();
+        fs::write(
+            fixture.process_file("stat"),
+            stat_with_session(fixture.pid, 1, fixture.pid, 42, 987_654),
+        )
+        .unwrap();
+        fs::write(fixture.process_file("environ"), b"XDG_RUNTIME_DIR=/tmp\0").unwrap();
+
+        assert!(matches!(
+            validate_confirm_session_at(fixture.root.path(), &fixture.terminal_request()),
+            Err(SessionValidationError::MissingSessionEnvironment)
+        ));
+    }
+
+    #[test]
     fn rejects_changed_process_start_time() {
         let fixture = ProcFixture::valid();
         let mut request = fixture.request();
-        request.pi_start_time += 1;
+        if let authd_protocol::ConfirmSessionTarget::Pi { start_time, .. } = &mut request.target {
+            *start_time += 1;
+        }
 
         assert!(matches!(
             validate_confirm_session_at(fixture.root.path(), &request),

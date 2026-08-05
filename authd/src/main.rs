@@ -521,8 +521,10 @@ mod tests {
     #[cfg(not(coverage))]
     fn confirm_session_request() -> DaemonRequest {
         DaemonRequest::ConfirmSession(ConfirmSessionRequest {
-            pi_pid: 4242,
-            pi_start_time: 987_654,
+            target: authd_protocol::ConfirmSessionTarget::Pi {
+                pid: 4242,
+                start_time: 987_654,
+            },
             target_uid: 1000,
             title: "Secrets Broker".into(),
             message: "Unlock credentials?".into(),
@@ -618,8 +620,10 @@ mod tests {
     async fn confirm_session_rejects_untrusted_consumer() {
         let trace = RequestTrace::new();
         let request = ConfirmSessionRequest {
-            pi_pid: 4242,
-            pi_start_time: 987_654,
+            target: authd_protocol::ConfirmSessionTarget::Pi {
+                pid: 4242,
+                start_time: 987_654,
+            },
             target_uid: 1000,
             title: "Secrets Broker".into(),
             message: "Unlock credentials?".into(),

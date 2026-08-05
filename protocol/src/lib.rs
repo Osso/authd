@@ -70,8 +70,21 @@ pub enum DaemonRequest {
     Exec(AuthRequest),
     /// polkit agent forwarded a `BeginAuthentication`: confirm, then assert.
     Polkit(PolkitRequest),
-    /// Secrets Broker request confirmed in the target Pi user's session.
+    /// Secrets Broker request confirmed in the target user's Pi or terminal session.
     ConfirmSession(ConfirmSessionRequest),
+}
+
+/// Process target for a Secrets Broker confirmation request.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ConfirmSessionTarget {
+    /// A verified Pi process, with authd resolving its same-UID Pi parent fallback.
+    Pi { pid: u32, start_time: u64 },
+    /// A terminal session leader and its claimed controlling TTY.
+    Terminal {
+        leader_pid: u32,
+        leader_start_time: u64,
+        tty_device: i64,
+    },
 }
 
 /// Confirmation request from the dedicated Secrets Broker service.
@@ -79,8 +92,7 @@ pub enum DaemonRequest {
 /// Process and session fields are claims that authd must independently verify.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ConfirmSessionRequest {
-    pub pi_pid: u32,
-    pub pi_start_time: u64,
+    pub target: ConfirmSessionTarget,
     pub target_uid: u32,
     pub title: String,
     pub message: String,
@@ -238,10 +250,13 @@ mod tests {
     }
 
     #[test]
-    fn confirm_session_request_roundtrip() {
+    fn confirm_session_request_roundtrips_pi_target() {
+        let target = ConfirmSessionTarget::Pi {
+            pid: 4242,
+            start_time: 987_654,
+        };
         let request = DaemonRequest::ConfirmSession(ConfirmSessionRequest {
-            pi_pid: 4242,
-            pi_start_time: 987_654,
+            target: target.clone(),
             target_uid: 1000,
             title: "Secrets Broker".into(),
             message: "Unlock database credentials?".into(),
@@ -253,8 +268,35 @@ mod tests {
 
         match decoded {
             DaemonRequest::ConfirmSession(request) => {
-                assert_eq!(request.pi_pid, 4242);
-                assert_eq!(request.pi_start_time, 987_654);
+                assert_eq!(request.target, target);
+                assert_eq!(request.target_uid, 1000);
+                assert_eq!(request.detail, "mysql-gc:prod-ro");
+            }
+            other => panic!("expected ConfirmSession, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn confirm_session_request_roundtrips_terminal_target() {
+        let target = ConfirmSessionTarget::Terminal {
+            leader_pid: 4242,
+            leader_start_time: 987_654,
+            tty_device: 34816,
+        };
+        let request = DaemonRequest::ConfirmSession(ConfirmSessionRequest {
+            target: target.clone(),
+            target_uid: 1000,
+            title: "Secrets Broker".into(),
+            message: "Unlock database credentials?".into(),
+            detail: "mysql-gc:prod-ro".into(),
+        });
+
+        let encoded = rmp_serde::to_vec(&request).unwrap();
+        let decoded: DaemonRequest = rmp_serde::from_slice(&encoded).unwrap();
+
+        match decoded {
+            DaemonRequest::ConfirmSession(request) => {
+                assert_eq!(request.target, target);
                 assert_eq!(request.target_uid, 1000);
                 assert_eq!(request.detail, "mysql-gc:prod-ro");
             }
