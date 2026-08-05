@@ -63,7 +63,8 @@ Authd independently validates the claimed Pi process before showing the dialog:
 - PID still exists and its `/proc/<pid>/stat` start time matches the request
 - `/proc/<pid>/exe` is `pi` or `pi-dev`
 - process UID matches the requested target UID
-- `WAYLAND_DISPLAY` and `XDG_RUNTIME_DIR` are present in the Pi process environment
+- `WAYLAND_DISPLAY` and `XDG_RUNTIME_DIR` are present in the Pi process environment; if a detached Pi runner lacks them, authd searches up to eight same-UID `pi`/`pi-dev` parents for the session environment
+- parent traversal stops at a non-Pi process, UID mismatch, or missing process data
 - the runtime directory is owned by the target UID
 - the process start time still matches after validation
 
