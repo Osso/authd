@@ -93,7 +93,7 @@ fn reexec_via_authsudo(target_uid: Uid) -> Result<(), Error> {
     let authsudo = which("authsudo").ok_or(Error::AuthsudoNotFound)?;
 
     // Use absolute path to current executable to prevent TOCTOU
-    let exe = std::env::current_exe().map_err(|e| Error::ExecFailed(e))?;
+    let exe = std::env::current_exe().map_err(Error::ExecFailed)?;
     let args: Vec<OsString> = std::env::args_os().skip(1).collect();
 
     let mut cmd = Command::new(&authsudo);
