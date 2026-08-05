@@ -90,6 +90,12 @@ Use the repository deployment script:
 
 It builds with `--locked`, installs the authd binaries and service files, reloads/restarts the system `authd.service`, and reloads/restarts the current user's `authd-polkit-agent.service`. The separate `session-dialog` project must already have installed `/usr/bin/session-dialog`; authd launches that binary for confirmation dialogs.
 
+## Verified deployment state
+
+Deployment on 2026-08-05 used authd master `585c146fcaed1965abce47d4a5a54ed8f5d32d45` and Secrets Broker master `352d8b174a03fc76fb7de3dc5a19ff7f45daa041`. Installed `/usr/bin/authd` SHA-256 `86a1412560e66413ddca93b62800a0e464d17d3e3b19951c8cc94e894626027e` matches `target/release/authd`; installed `/usr/bin/secrets-broker` SHA-256 `e285d90fbf0c77d7daaebc1588fccc9a18eba200c26b254e84d104aefa18f23e` matches `target/release/secrets-broker`. `authd.service`, `authd-polkit-agent.service`, and `secrets-broker.service` were restarted and are active.
+
+User-confirmed live Claude Code `mysql-gc` smoke succeeded: the journal showed `agent_name=Claude Code` and approval, followed by a successful typed operation without plaintext fallback. Codex is configured and behaviorally covered, but no live Codex process/session was available for smoke.
+
 ## Policy Configuration
 
 Policies are TOML files in `/etc/authd/policies.d/`.
