@@ -125,17 +125,8 @@ async fn handle_connection(conn: Connection, caller: CallerInfo, state: Arc<AppS
     );
 
     let (mut reader, mut writer) = conn.split();
-    let request: DaemonRequest = match reader.read().await {
-        Ok(request) => request,
-        Err(error) => {
-            error!("request_id={} invalid request: {}", trace.id(), error);
-            let _ = writer
-                .write(&AuthResponse::Error {
-                    message: "invalid request".into(),
-                })
-                .await;
-            return;
-        }
+    let Some(request) = read_daemon_request(&mut reader, &mut writer, &trace).await else {
+        return;
     };
     trace.log("request_decoded");
 
@@ -152,6 +143,25 @@ async fn handle_connection(conn: Connection, caller: CallerInfo, state: Arc<AppS
         DaemonRequest::ConfirmSession(request) => {
             let response = confirm_session_response(&caller, &request, &trace);
             complete_response(reader, writer, response, &trace).await;
+        }
+    }
+}
+
+#[cfg(not(coverage))]
+async fn read_daemon_request(
+    reader: &mut ConnectionReader,
+    writer: &mut ConnectionWriter,
+    trace: &RequestTrace,
+) -> Option<DaemonRequest> {
+    match reader.read().await {
+        Ok(request) => Some(request),
+        Err(error) => {
+            error!("request_id={} invalid request: {}", trace.id(), error);
+            let response = AuthResponse::Error {
+                message: "invalid request".into(),
+            };
+            let _ = writer.write(&response).await;
+            None
         }
     }
 }
