@@ -245,6 +245,25 @@ fn rejects_configured_agent_without_terminal_origin() {
 }
 
 #[test]
+fn rejects_non_matching_pinned_executable_before_owner_policy() {
+    let fixture = tempfile::tempdir().unwrap();
+    let trusted = fixture.path().join("claude");
+    fs::write(&trusted, "").unwrap();
+    let executable = ProcessExecutable {
+        path: "/usr/bin/zsh".into(),
+        device: 1,
+        inode: 2,
+        uid: 0,
+        mode: 0o755,
+    };
+    let launchers = [trusted];
+
+    let result = validate_pinned_agent_executable(&executable, &launchers, 1000);
+
+    assert_eq!(result, Err(SessionValidationError::AgentExecutableMismatch));
+}
+
+#[test]
 fn uses_parent_pi_session_for_detached_pi_runner() {
     let fixture = ProcFixture::valid();
     let parent_pid = 4241;

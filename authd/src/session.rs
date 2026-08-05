@@ -473,6 +473,9 @@ fn validate_pinned_agent_executable(
     if launchers.is_empty() {
         return Err(SessionValidationError::AgentLaunchersMissing);
     }
+    if !matches_pinned_agent_launcher(executable, launchers)? {
+        return Err(SessionValidationError::AgentExecutableMismatch);
+    }
     if executable.uid != target_uid {
         return Err(SessionValidationError::AgentExecutableOwnerMismatch);
     }
@@ -481,12 +484,19 @@ fn validate_pinned_agent_executable(
     {
         return Err(SessionValidationError::AgentExecutablePermissions);
     }
+    Ok(())
+}
+
+fn matches_pinned_agent_launcher(
+    executable: &ProcessExecutable,
+    launchers: &[PathBuf],
+) -> Result<bool, SessionValidationError> {
     for launcher in launchers {
         if pinned_launcher_matches(executable, launcher)? {
-            return Ok(());
+            return Ok(true);
         }
     }
-    Err(SessionValidationError::AgentExecutableMismatch)
+    Ok(false)
 }
 
 fn pinned_launcher_matches(
