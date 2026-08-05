@@ -56,6 +56,16 @@ struct ValidatedSessionTarget {
     env: HashMap<String, String>,
 }
 
+struct AgentTargetClaim<'a> {
+    pid: u32,
+    start_time: u64,
+    executable_device: u64,
+    executable_inode: u64,
+    executable_rule: &'a AgentExecutableRule,
+    terminal: Option<&'a AgentTerminalSession>,
+    target_uid: u32,
+}
+
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum SessionValidationError {
     #[error("target process is unavailable")]
@@ -147,16 +157,16 @@ fn read_validated_agent_session_target(
     else {
         unreachable!("agent target was selected by the caller")
     };
-    let (process, terminal) = read_and_validate_agent_target_process(
-        proc_root,
-        *pid,
-        *start_time,
-        *executable_device,
-        *executable_inode,
+    let claim = AgentTargetClaim {
+        pid: *pid,
+        start_time: *start_time,
+        executable_device: *executable_device,
+        executable_inode: *executable_inode,
         executable_rule,
-        terminal.as_ref(),
-        request.target_uid,
-    )?;
+        terminal: terminal.as_ref(),
+        target_uid: request.target_uid,
+    };
+    let (process, terminal) = read_and_validate_agent_target_process(proc_root, &claim)?;
     let env = read_agent_session_environment(proc_root, *pid, process.uid, executable_rule)?;
     Ok(ValidatedSessionTarget {
         process,
@@ -194,30 +204,29 @@ fn read_validated_terminal_session_target(
 
 fn read_and_validate_agent_target_process(
     proc_root: &Path,
-    pid: u32,
-    start_time: u64,
-    executable_device: u64,
-    executable_inode: u64,
-    executable_rule: &AgentExecutableRule,
-    terminal: Option<&AgentTerminalSession>,
-    target_uid: u32,
+    claim: &AgentTargetClaim<'_>,
 ) -> Result<(ValidatedTargetProcess, Option<ValidatedTargetProcess>), SessionValidationError> {
-    let process_dir = proc_root.join(pid.to_string());
+    let process_dir = proc_root.join(claim.pid.to_string());
     let stat = read_process_stat(&process_dir)?;
-    if stat.start_time != start_time {
+    if stat.start_time != claim.start_time {
         return Err(SessionValidationError::StartTimeMismatch);
     }
     let (uid, gid) = read_process_ids(&process_dir)?;
-    if uid != target_uid {
+    if uid != claim.target_uid {
         return Err(SessionValidationError::UidMismatch);
     }
     let executable = read_process_executable(&process_dir)?;
-    validate_agent_executable_rule(&executable, executable_rule, target_uid)?;
-    if executable.device != executable_device || executable.inode != executable_inode {
+    validate_agent_executable_rule(&executable, claim.executable_rule, claim.target_uid)?;
+    if executable.device != claim.executable_device || executable.inode != claim.executable_inode {
         return Err(SessionValidationError::AgentExecutableIdentityMismatch);
     }
-    let terminal =
-        read_and_validate_agent_terminal(proc_root, &stat, executable_rule, terminal, target_uid)?;
+    let terminal = read_and_validate_agent_terminal(
+        proc_root,
+        &stat,
+        claim.executable_rule,
+        claim.terminal,
+        claim.target_uid,
+    )?;
     Ok((
         ValidatedTargetProcess {
             process_dir,
