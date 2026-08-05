@@ -3,13 +3,27 @@ use std::collections::HashMap;
 use std::fs;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
+use std::str::FromStr;
 use thiserror::Error;
+
+const MAX_PI_SESSION_ANCESTORS: usize = 8;
+const PROC_STAT_PARENT_PID_INDEX: usize = 1;
+const PROC_STAT_START_TIME_INDEX: usize = 19;
+const REQUIRED_SESSION_ENVIRONMENT: [&str; 2] = ["WAYLAND_DISPLAY", "XDG_RUNTIME_DIR"];
 
 #[derive(Debug)]
 pub struct ValidatedSession {
     pub uid: u32,
     pub gid: u32,
     pub env: HashMap<String, String>,
+}
+
+#[derive(Debug)]
+struct ValidatedTargetProcess {
+    process_dir: PathBuf,
+    initial_start_time: u64,
+    uid: u32,
+    gid: u32,
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -38,6 +52,21 @@ fn validate_confirm_session_at(
     proc_root: &Path,
     request: &ConfirmSessionRequest,
 ) -> Result<ValidatedSession, SessionValidationError> {
+    let target = read_and_validate_target_process(proc_root, request)?;
+    let env = read_pi_session_environment(proc_root, request.pi_pid, target.uid)?;
+    ensure_process_start_time_unchanged(&target.process_dir, target.initial_start_time)?;
+
+    Ok(ValidatedSession {
+        uid: target.uid,
+        gid: target.gid,
+        env,
+    })
+}
+
+fn read_and_validate_target_process(
+    proc_root: &Path,
+    request: &ConfirmSessionRequest,
+) -> Result<ValidatedTargetProcess, SessionValidationError> {
     let process_dir = proc_root.join(request.pi_pid.to_string());
     let initial_start_time = read_start_time(&process_dir)?;
     if initial_start_time != request.pi_start_time {
@@ -50,14 +79,23 @@ fn validate_confirm_session_at(
         return Err(SessionValidationError::UidMismatch);
     }
 
-    let env = find_pi_session_environment(proc_root, request.pi_pid, uid)?;
+    Ok(ValidatedTargetProcess {
+        process_dir,
+        initial_start_time,
+        uid,
+        gid,
+    })
+}
 
-    let final_start_time = read_start_time(&process_dir)?;
+fn ensure_process_start_time_unchanged(
+    process_dir: &Path,
+    initial_start_time: u64,
+) -> Result<(), SessionValidationError> {
+    let final_start_time = read_start_time(process_dir)?;
     if final_start_time != initial_start_time {
         return Err(SessionValidationError::StartTimeMismatch);
     }
-
-    Ok(ValidatedSession { uid, gid, env })
+    Ok(())
 }
 
 fn read_start_time(process_dir: &Path) -> Result<u64, SessionValidationError> {
@@ -67,61 +105,90 @@ fn read_start_time(process_dir: &Path) -> Result<u64, SessionValidationError> {
 fn read_process_stat(process_dir: &Path) -> Result<(u32, u64), SessionValidationError> {
     let stat = fs::read_to_string(process_dir.join("stat"))
         .map_err(|_| SessionValidationError::ProcessUnavailable)?;
+    parse_process_stat(&stat)
+}
+
+fn parse_process_stat(stat: &str) -> Result<(u32, u64), SessionValidationError> {
     let command_end = stat
         .rfind(") ")
         .ok_or(SessionValidationError::ProcessUnavailable)?;
     let fields = stat[command_end + 2..]
         .split_whitespace()
         .collect::<Vec<_>>();
-    let parent_pid = fields
-        .get(1)
-        .and_then(|value| value.parse().ok())
-        .ok_or(SessionValidationError::ProcessUnavailable)?;
-    let start_time = fields
-        .get(19)
-        .and_then(|value| value.parse().ok())
-        .ok_or(SessionValidationError::ProcessUnavailable)?;
+    let parent_pid = parse_process_stat_field(&fields, PROC_STAT_PARENT_PID_INDEX)?;
+    let start_time = parse_process_stat_field(&fields, PROC_STAT_START_TIME_INDEX)?;
     Ok((parent_pid, start_time))
 }
 
-fn find_pi_session_environment(
+fn parse_process_stat_field<T>(fields: &[&str], index: usize) -> Result<T, SessionValidationError>
+where
+    T: FromStr,
+{
+    fields
+        .get(index)
+        .and_then(|value| value.parse().ok())
+        .ok_or(SessionValidationError::ProcessUnavailable)
+}
+
+fn read_pi_session_environment(
     proc_root: &Path,
     pi_pid: u32,
     uid: u32,
 ) -> Result<HashMap<String, String>, SessionValidationError> {
     let mut current_pid = pi_pid;
-    for _ in 0..8 {
+    for _ in 0..MAX_PI_SESSION_ANCESTORS {
         let process_dir = proc_root.join(current_pid.to_string());
-        match read_session_environment(&process_dir) {
-            Ok(env) => {
-                validate_runtime_directory_owner(&env, uid)?;
-                return Ok(env);
-            }
-            Err(SessionValidationError::MissingSessionEnvironment) => {}
-            Err(error) => return Err(error),
+        if let Some(env) = read_owned_session_environment(&process_dir, uid)? {
+            return Ok(env);
         }
 
-        let (parent_pid, _) = read_process_stat(&process_dir)?;
-        if parent_pid == 0 || parent_pid == current_pid {
+        let Some(parent_pid) = read_same_uid_pi_parent(proc_root, &process_dir, current_pid, uid)?
+        else {
             break;
-        }
-        let parent_dir = proc_root.join(parent_pid.to_string());
-        match validate_pi_executable(&parent_dir) {
-            Ok(()) => {}
-            Err(
-                SessionValidationError::NotPiProcess | SessionValidationError::ProcessUnavailable,
-            ) => {
-                break;
-            }
-            Err(error) => return Err(error),
-        }
-        let (parent_uid, _) = read_process_ids(&parent_dir)?;
-        if parent_uid != uid {
-            return Err(SessionValidationError::UidMismatch);
-        }
+        };
         current_pid = parent_pid;
     }
     Err(SessionValidationError::MissingSessionEnvironment)
+}
+
+fn read_owned_session_environment(
+    process_dir: &Path,
+    uid: u32,
+) -> Result<Option<HashMap<String, String>>, SessionValidationError> {
+    match read_session_environment(process_dir) {
+        Ok(env) => {
+            validate_runtime_directory_owner(&env, uid)?;
+            Ok(Some(env))
+        }
+        Err(SessionValidationError::MissingSessionEnvironment) => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+fn read_same_uid_pi_parent(
+    proc_root: &Path,
+    process_dir: &Path,
+    current_pid: u32,
+    uid: u32,
+) -> Result<Option<u32>, SessionValidationError> {
+    let (parent_pid, _) = read_process_stat(process_dir)?;
+    if parent_pid == 0 || parent_pid == current_pid {
+        return Ok(None);
+    }
+
+    let parent_dir = proc_root.join(parent_pid.to_string());
+    match validate_pi_executable(&parent_dir) {
+        Ok(()) => {}
+        Err(SessionValidationError::NotPiProcess | SessionValidationError::ProcessUnavailable) => {
+            return Ok(None);
+        }
+        Err(error) => return Err(error),
+    }
+    let (parent_uid, _) = read_process_ids(&parent_dir)?;
+    if parent_uid != uid {
+        return Err(SessionValidationError::UidMismatch);
+    }
+    Ok(Some(parent_pid))
 }
 
 fn validate_pi_executable(process_dir: &Path) -> Result<(), SessionValidationError> {
@@ -164,7 +231,7 @@ fn read_session_environment(
         .filter(|(key, _)| allowed.contains(&key.as_str()))
         .collect::<HashMap<_, _>>();
 
-    let has_required = ["WAYLAND_DISPLAY", "XDG_RUNTIME_DIR"]
+    let has_required = REQUIRED_SESSION_ENVIRONMENT
         .iter()
         .all(|key| env.get(*key).is_some_and(|value| !value.is_empty()));
     if has_required {
@@ -187,7 +254,7 @@ fn validate_runtime_directory_owner(
     let runtime_dir = env
         .get("XDG_RUNTIME_DIR")
         .ok_or(SessionValidationError::MissingSessionEnvironment)?;
-    let metadata = fs::metadata(PathBuf::from(runtime_dir))
+    let metadata = fs::metadata(Path::new(runtime_dir))
         .map_err(|_| SessionValidationError::MissingSessionEnvironment)?;
     if metadata.uid() == uid {
         Ok(())
