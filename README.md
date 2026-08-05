@@ -56,28 +56,15 @@ Shared types for daemon communication (AuthRequest, AuthResponse, ConfirmSession
 
 ## Secrets Broker confirmation
 
-The Secrets Broker may request a confirmation for a specific verified Pi or terminal session by sending a `ConfirmSessionRequest` to authd. Only a caller whose socket executable is exactly `/usr/bin/secrets-broker` is accepted for this flow.
+The Secrets Broker may request confirmation for one verified generic `Agent` identity by sending a `ConfirmSessionRequest` to authd. Only a caller whose socket executable is exactly `/usr/bin/secrets-broker` is accepted for this flow.
 
-Authd independently validates the claimed `ConfirmSessionTarget` before showing the dialog. For an exact Pi target, it validates:
+Authd independently validates the claimed `ConfirmSessionTarget` before showing the dialog. The target uses one generic Agent validation path shared by the existing Pi/pi-dev family and configured Claude Code/Codex harness families; direct terminal remains the fallback target.
 
-- PID still exists and its `/proc/<pid>/stat` start time matches the request
-- `/proc/<pid>/exe` is `pi` or `pi-dev`
-- process UID matches the requested target UID
-- `WAYLAND_DISPLAY` and `XDG_RUNTIME_DIR` are present in the Pi process environment; if a detached Pi runner lacks them, authd searches up to eight same-UID `pi`/`pi-dev` parents for the session environment
-- parent traversal stops at a non-Pi process, UID mismatch, or missing process data
-- the runtime directory is owned by the target UID
-- the process start time still matches after validation
+For the Pi/pi-dev family, authd validates the exact process generation and same-UID process identity. Nested Pi runners may resolve to the existing outer generation, and Pi does not require terminal origin. Authd validates the process start time, executable identity, UID, Wayland session environment, runtime-directory ownership, and final start-time stability.
 
-For a terminal-session target, it independently validates:
+For a configured harness family, authd validates the pinned launcher resolved path/device/inode, exact harness PID/start time/executable identity, target UID/GID, and a same-UID verified terminal origin. The harness must remain in that terminal session, with matching session and nonzero controlling TTY; Wayland/runtime environment and runtime-directory ownership are validated from the harness session, and the harness and terminal leader are rechecked for start-time stability. Claude `!` commands and ordinary Claude shell descendants share the Claude Agent generation; Codex uses its own family.
 
-- the claimed session-leader PID still exists and its `/proc/<pid>/stat` start time matches the request
-- the process is the session leader for its own session and has a nonzero controlling TTY matching the request
-- the session leader UID matches the requested target UID
-- `WAYLAND_DISPLAY` and `XDG_RUNTIME_DIR` are present in the session-leader environment
-- the runtime directory is owned by the target UID
-- the session-leader start time still matches after validation
-
-The dialog is launched as the validated target UID/GID with the validated session environment. The response is `Confirmed`, `Denied`, or `Error`. Disconnecting the broker while confirmation is pending cancels and reaps the dialog process without sending a response.
+The broker resolves Agent families in preference order: Pi/pi-dev first, configured Claude/Codex harnesses next, then direct terminal. Authd independently validates the same kind and family named by the broker. Grants do not cross Agent families or process generations. The dialog is launched as the validated target UID/GID with the validated session environment. The response is `Confirmed`, `Denied`, or `Error`. Disconnecting the broker while confirmation is pending cancels and reaps the dialog without sending a response.
 
 ## Operational behavior
 

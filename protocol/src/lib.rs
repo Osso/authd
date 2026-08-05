@@ -70,15 +70,40 @@ pub enum DaemonRequest {
     Exec(AuthRequest),
     /// polkit agent forwarded a `BeginAuthentication`: confirm, then assert.
     Polkit(PolkitRequest),
-    /// Secrets Broker request confirmed in the target user's Pi or terminal session.
+    /// Secrets Broker request confirmed in the target user's agent or terminal session.
     ConfirmSession(ConfirmSessionRequest),
+}
+
+/// Executable matching rule for a verified agent session.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AgentExecutableRule {
+    /// Existing Pi compatibility rule for `pi` and `pi-dev` executables.
+    Pi,
+    /// Stable launchers that must canonicalize to the selected executable identity.
+    Pinned { launchers: Vec<PathBuf> },
+}
+
+/// Originating terminal identity required by configured agent harnesses.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentTerminalSession {
+    pub leader_pid: u32,
+    pub leader_start_time: u64,
+    pub tty_device: i64,
 }
 
 /// Process target for a Secrets Broker confirmation request.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ConfirmSessionTarget {
-    /// A verified Pi process, with authd resolving its same-UID Pi parent fallback.
-    Pi { pid: u32, start_time: u64 },
+    /// A verified agent process selected from its ancestor generation.
+    Agent {
+        name: String,
+        executable_rule: AgentExecutableRule,
+        pid: u32,
+        start_time: u64,
+        executable_device: u64,
+        executable_inode: u64,
+        terminal: Option<AgentTerminalSession>,
+    },
     /// A terminal session leader and its claimed controlling TTY.
     Terminal {
         leader_pid: u32,
@@ -250,10 +275,53 @@ mod tests {
     }
 
     #[test]
-    fn confirm_session_request_roundtrips_pi_target() {
-        let target = ConfirmSessionTarget::Pi {
+    fn confirm_session_request_roundtrips_pi_agent_target() {
+        let target = ConfirmSessionTarget::Agent {
+            name: "Pi".into(),
+            executable_rule: AgentExecutableRule::Pi,
             pid: 4242,
             start_time: 987_654,
+            executable_device: 51,
+            executable_inode: 47_145_061,
+            terminal: None,
+        };
+        let request = DaemonRequest::ConfirmSession(ConfirmSessionRequest {
+            target: target.clone(),
+            target_uid: 1000,
+            title: "Secrets Broker".into(),
+            message: "Unlock database credentials?".into(),
+            detail: "mysql-gc:prod-ro".into(),
+        });
+
+        let encoded = rmp_serde::to_vec(&request).unwrap();
+        let decoded: DaemonRequest = rmp_serde::from_slice(&encoded).unwrap();
+
+        match decoded {
+            DaemonRequest::ConfirmSession(request) => {
+                assert_eq!(request.target, target);
+                assert_eq!(request.target_uid, 1000);
+                assert_eq!(request.detail, "mysql-gc:prod-ro");
+            }
+            other => panic!("expected ConfirmSession, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn confirm_session_request_roundtrips_agent_target() {
+        let target = ConfirmSessionTarget::Agent {
+            name: "Claude Code".into(),
+            executable_rule: AgentExecutableRule::Pinned {
+                launchers: vec!["/home/osso/.local/bin/claude".into()],
+            },
+            pid: 4242,
+            start_time: 987_654,
+            executable_device: 51,
+            executable_inode: 47_069_636,
+            terminal: Some(AgentTerminalSession {
+                leader_pid: 4000,
+                leader_start_time: 123_456,
+                tty_device: 34816,
+            }),
         };
         let request = DaemonRequest::ConfirmSession(ConfirmSessionRequest {
             target: target.clone(),
