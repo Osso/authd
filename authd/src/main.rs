@@ -12,10 +12,11 @@ use dialog::{DialogResult, show_target_session_dialog};
 use peercred_ipc::CallerInfo;
 #[cfg(not(coverage))]
 use peercred_ipc::{CallerInfo, Connection, ConnectionReader, ConnectionWriter, IpcError, Server};
-use session::validate_confirm_session;
+use session::{ValidatedSession, validate_confirm_session};
 use std::collections::HashMap;
 #[cfg(not(coverage))]
 use std::future::Future;
+use std::path::Path;
 #[cfg(not(coverage))]
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -31,6 +32,8 @@ const PK_SERVICE: &str = "org.freedesktop.PolicyKit1";
 const PK_AUTHORITY_PATH: &str = "/org/freedesktop/PolicyKit1/Authority";
 #[cfg(not(coverage))]
 const PK_AUTHORITY_IFACE: &str = "org.freedesktop.PolicyKit1.Authority";
+
+const SECRETS_BROKER_EXECUTABLE: &str = "/usr/bin/secrets-broker";
 
 static NEXT_REQUEST_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -292,24 +295,42 @@ async fn confirm_session_response(
     request: &ConfirmSessionRequest,
     trace: &RequestTrace,
 ) -> ConfirmSessionResponse {
-    if !is_trusted_confirm_consumer(caller)
-        || caller.exe != std::path::Path::new("/usr/bin/secrets-broker")
-    {
-        return ConfirmSessionResponse::Denied {
-            reason: "caller is not the trusted Secrets Broker".into(),
-        };
+    if let Err(response) = require_secrets_broker_caller(caller) {
+        return response;
     }
-
-    let session = match validate_confirm_session(request) {
+    let session = match read_validated_confirm_session(request) {
         Ok(session) => session,
-        Err(error) => {
-            eprintln!("authd: ConfirmSession validation failed: {error}");
-            return ConfirmSessionResponse::Denied {
-                reason: error.to_string(),
-            };
-        }
+        Err(response) => return response,
     };
+    show_confirm_session_dialog(&session, request, trace).await
+}
 
+fn require_secrets_broker_caller(caller: &CallerInfo) -> Result<(), ConfirmSessionResponse> {
+    if is_secrets_broker(caller) {
+        Ok(())
+    } else {
+        Err(ConfirmSessionResponse::Denied {
+            reason: "caller is not the trusted Secrets Broker".into(),
+        })
+    }
+}
+
+fn read_validated_confirm_session(
+    request: &ConfirmSessionRequest,
+) -> Result<ValidatedSession, ConfirmSessionResponse> {
+    validate_confirm_session(request).map_err(|error| {
+        eprintln!("authd: ConfirmSession validation failed: {error}");
+        ConfirmSessionResponse::Denied {
+            reason: error.to_string(),
+        }
+    })
+}
+
+async fn show_confirm_session_dialog(
+    session: &ValidatedSession,
+    request: &ConfirmSessionRequest,
+    trace: &RequestTrace,
+) -> ConfirmSessionResponse {
     let result = show_target_session_dialog(
         session.uid,
         session.gid,
@@ -320,6 +341,10 @@ async fn confirm_session_response(
         trace,
     )
     .await;
+    confirm_session_dialog_response(result)
+}
+
+fn confirm_session_dialog_response(result: DialogResult) -> ConfirmSessionResponse {
     match result {
         DialogResult::Confirmed => ConfirmSessionResponse::Confirmed,
         DialogResult::Denied => ConfirmSessionResponse::Denied {
@@ -332,15 +357,16 @@ async fn confirm_session_response(
 }
 
 fn is_trusted_confirm_consumer(caller: &CallerInfo) -> bool {
-    if caller.exe == std::path::Path::new("/usr/bin/secrets-broker") {
-        return true;
-    }
+    is_secrets_broker(caller)
+        || caller
+            .exe
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| matches!(name, "authsudo" | "config-guard"))
+}
 
-    caller
-        .exe
-        .file_name()
-        .and_then(|name| name.to_str())
-        .is_some_and(|name| matches!(name, "authsudo" | "config-guard"))
+fn is_secrets_broker(caller: &CallerInfo) -> bool {
+    caller.exe == Path::new(SECRETS_BROKER_EXECUTABLE)
 }
 
 async fn policy_response(
@@ -615,6 +641,22 @@ mod tests {
             1000
         )));
         assert!(!is_trusted_confirm_consumer(&caller("/usr/bin/curl", 1000)));
+    }
+
+    #[test]
+    fn target_session_dialog_results_map_to_protocol_responses() {
+        assert!(matches!(
+            confirm_session_dialog_response(DialogResult::Confirmed),
+            ConfirmSessionResponse::Confirmed
+        ));
+        assert!(matches!(
+            confirm_session_dialog_response(DialogResult::Denied),
+            ConfirmSessionResponse::Denied { .. }
+        ));
+        assert!(matches!(
+            confirm_session_dialog_response(DialogResult::Error),
+            ConfirmSessionResponse::Error { .. }
+        ));
     }
 
     #[cfg(coverage)]
