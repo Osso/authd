@@ -74,13 +74,11 @@ pub enum DaemonRequest {
     ConfirmSession(ConfirmSessionRequest),
 }
 
-/// Executable matching rule for a verified agent session.
+/// Kernel process-name matching rule for a verified agent session.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub enum AgentExecutableRule {
-    /// Existing Pi compatibility rule for `pi` and `pi-dev` executables.
-    Pi,
-    /// Stable launchers that must canonicalize to the selected executable identity.
-    Pinned { launchers: Vec<PathBuf> },
+pub struct AgentExecutableRule {
+    pub executable_names: Vec<String>,
+    pub requires_terminal: bool,
 }
 
 /// Originating terminal identity required by configured agent harnesses.
@@ -278,7 +276,10 @@ mod tests {
     fn confirm_session_request_roundtrips_pi_agent_target() {
         let target = ConfirmSessionTarget::Agent {
             name: "Pi".into(),
-            executable_rule: AgentExecutableRule::Pi,
+            executable_rule: AgentExecutableRule {
+                executable_names: vec!["pi".into(), "pi-dev".into()],
+                requires_terminal: false,
+            },
             pid: 4242,
             start_time: 987_654,
             executable_device: 51,
@@ -310,8 +311,9 @@ mod tests {
     fn confirm_session_request_roundtrips_agent_target() {
         let target = ConfirmSessionTarget::Agent {
             name: "Claude Code".into(),
-            executable_rule: AgentExecutableRule::Pinned {
-                launchers: vec!["/home/osso/.local/bin/claude".into()],
+            executable_rule: AgentExecutableRule {
+                executable_names: vec!["claude".into()],
+                requires_terminal: true,
             },
             pid: 4242,
             start_time: 987_654,

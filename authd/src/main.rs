@@ -521,7 +521,10 @@ mod tests {
     fn pi_agent_target() -> authd_protocol::ConfirmSessionTarget {
         authd_protocol::ConfirmSessionTarget::Agent {
             name: "Pi".into(),
-            executable_rule: authd_protocol::AgentExecutableRule::Pi,
+            executable_rule: authd_protocol::AgentExecutableRule {
+                executable_names: vec!["pi".into(), "pi-dev".into()],
+                requires_terminal: false,
+            },
             pid: 4242,
             start_time: 987_654,
             executable_device: 51,

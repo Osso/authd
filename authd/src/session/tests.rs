@@ -49,7 +49,10 @@ impl ProcFixture {
         ConfirmSessionRequest {
             target: authd_protocol::ConfirmSessionTarget::Agent {
                 name: "Pi".into(),
-                executable_rule: authd_protocol::AgentExecutableRule::Pi,
+                executable_rule: authd_protocol::AgentExecutableRule {
+                    executable_names: vec!["pi".into(), "pi-dev".into()],
+                    requires_terminal: false,
+                },
                 pid: self.pid,
                 start_time: 987_654,
                 executable_device: metadata.dev(),
@@ -97,6 +100,17 @@ fn stat_with_session(
     tty_device: i64,
     start_time: u64,
 ) -> String {
+    stat_with_command("pi", pid, parent_pid, session_id, tty_device, start_time)
+}
+
+fn stat_with_command(
+    command_name: &str,
+    pid: u32,
+    parent_pid: u32,
+    session_id: u32,
+    tty_device: i64,
+    start_time: u64,
+) -> String {
     let fields = [
         "S".to_string(),
         parent_pid.to_string(),
@@ -121,7 +135,7 @@ fn stat_with_session(
         "0".into(),
         "0".into(),
     ];
-    format!("{pid} (pi process) {}", fields.join(" "))
+    format!("{pid} ({command_name}) {}", fields.join(" "))
 }
 
 #[test]
@@ -142,25 +156,35 @@ fn validates_matching_pi_process_and_session() {
 }
 
 #[test]
-fn validates_configured_agent_process_and_terminal_origin() {
+fn validates_live_agent_after_launcher_retargets() {
     let fixture = ProcFixture::valid();
     let leader_pid = 4000;
     let tty_device = 42;
-    fs::set_permissions(
-        fixture.root.path().join("pi"),
-        fs::Permissions::from_mode(0o755),
-    )
-    .unwrap();
+    let old_executable = fixture.root.path().join("2.1.222");
+    let new_executable = fixture.root.path().join("2.1.223");
+    fs::write(&old_executable, "").unwrap();
+    fs::write(&new_executable, "").unwrap();
+    fs::set_permissions(&old_executable, fs::Permissions::from_mode(0o755)).unwrap();
+    fs::set_permissions(&new_executable, fs::Permissions::from_mode(0o755)).unwrap();
+    fs::remove_file(fixture.process_file("exe")).unwrap();
+    symlink(&old_executable, fixture.process_file("exe")).unwrap();
     fs::write(
         fixture.process_file("stat"),
-        stat_with_session(fixture.pid, leader_pid, leader_pid, tty_device, 987_654),
+        stat_with_command(
+            "claude",
+            fixture.pid,
+            leader_pid,
+            leader_pid,
+            tty_device,
+            987_654,
+        ),
     )
     .unwrap();
     let leader_dir = fixture.root.path().join(leader_pid.to_string());
     fs::create_dir(&leader_dir).unwrap();
     fs::write(
         leader_dir.join("stat"),
-        stat_with_session(leader_pid, 1, leader_pid, tty_device, 123_456),
+        stat_with_command("zsh", leader_pid, 1, leader_pid, tty_device, 123_456),
     )
     .unwrap();
     fs::write(
@@ -175,13 +199,16 @@ fn validates_configured_agent_process_and_terminal_origin() {
     fs::write(&terminal_executable, "").unwrap();
     symlink(&terminal_executable, leader_dir.join("exe")).unwrap();
     let launcher = fixture.root.path().join("claude");
-    symlink(fixture.root.path().join("pi"), &launcher).unwrap();
+    symlink(&old_executable, &launcher).unwrap();
+    fs::remove_file(&launcher).unwrap();
+    symlink(&new_executable, &launcher).unwrap();
     let metadata = fs::metadata(fixture.process_file("exe")).unwrap();
     let request = ConfirmSessionRequest {
         target: authd_protocol::ConfirmSessionTarget::Agent {
             name: "Claude Code".into(),
-            executable_rule: authd_protocol::AgentExecutableRule::Pinned {
-                launchers: vec![launcher],
+            executable_rule: authd_protocol::AgentExecutableRule {
+                executable_names: vec!["claude".into()],
+                requires_terminal: true,
             },
             pid: fixture.pid,
             start_time: 987_654,
@@ -217,14 +244,18 @@ fn rejects_configured_agent_without_terminal_origin() {
         fs::Permissions::from_mode(0o755),
     )
     .unwrap();
-    let launcher = fixture.root.path().join("claude");
-    symlink(fixture.root.path().join("pi"), &launcher).unwrap();
+    fs::write(
+        fixture.process_file("stat"),
+        stat_with_command("claude", fixture.pid, 1, 0, 0, 987_654),
+    )
+    .unwrap();
     let metadata = fs::metadata(fixture.process_file("exe")).unwrap();
     let request = ConfirmSessionRequest {
         target: authd_protocol::ConfirmSessionTarget::Agent {
             name: "Claude Code".into(),
-            executable_rule: authd_protocol::AgentExecutableRule::Pinned {
-                launchers: vec![launcher],
+            executable_rule: authd_protocol::AgentExecutableRule {
+                executable_names: vec!["claude".into()],
+                requires_terminal: true,
             },
             pid: fixture.pid,
             start_time: 987_654,
@@ -242,25 +273,6 @@ fn rejects_configured_agent_without_terminal_origin() {
         validate_confirm_session_at(fixture.root.path(), &request),
         Err(SessionValidationError::AgentTerminalRequired)
     ));
-}
-
-#[test]
-fn rejects_non_matching_pinned_executable_before_owner_policy() {
-    let fixture = tempfile::tempdir().unwrap();
-    let trusted = fixture.path().join("claude");
-    fs::write(&trusted, "").unwrap();
-    let executable = ProcessExecutable {
-        path: "/usr/bin/zsh".into(),
-        device: 1,
-        inode: 2,
-        uid: 0,
-        mode: 0o755,
-    };
-    let launchers = [trusted];
-
-    let result = validate_pinned_agent_executable(&executable, &launchers, 1000);
-
-    assert_eq!(result, Err(SessionValidationError::AgentExecutableMismatch));
 }
 
 #[test]
@@ -446,10 +458,13 @@ fn rejects_target_uid_mismatch() {
 }
 
 #[test]
-fn rejects_non_matching_pi_agent_executable() {
+fn rejects_non_matching_agent_command_name() {
     let fixture = ProcFixture::valid();
-    fs::remove_file(fixture.process_file("exe")).unwrap();
-    symlink("/usr/bin/curl", fixture.process_file("exe")).unwrap();
+    fs::write(
+        fixture.process_file("stat"),
+        stat_with_command("curl", fixture.pid, 1, 0, 0, 987_654),
+    )
+    .unwrap();
 
     assert!(matches!(
         validate_confirm_session_at(fixture.root.path(), &fixture.request()),

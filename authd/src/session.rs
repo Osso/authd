@@ -10,8 +10,6 @@ use std::str::FromStr;
 use thiserror::Error;
 
 const MAX_AGENT_SESSION_ANCESTORS: usize = 8;
-const EXECUTABLE_PERMISSION_BITS: u32 = 0o111;
-const GROUP_OR_WORLD_WRITE_BITS: u32 = 0o022;
 const PROC_STAT_PARENT_PID_INDEX: usize = 1;
 const PROC_STAT_SESSION_ID_INDEX: usize = 3;
 const PROC_STAT_TTY_DEVICE_INDEX: usize = 4;
@@ -35,6 +33,7 @@ struct ValidatedTargetProcess {
 
 #[derive(Debug)]
 struct ProcessStat {
+    command_name: String,
     parent_pid: u32,
     session_id: u32,
     tty_device: i64,
@@ -43,11 +42,8 @@ struct ProcessStat {
 
 #[derive(Debug)]
 struct ProcessExecutable {
-    path: PathBuf,
     device: u64,
     inode: u64,
-    uid: u32,
-    mode: u32,
 }
 
 struct ValidatedSessionTarget {
@@ -78,15 +74,11 @@ pub enum SessionValidationError {
     AgentExecutableMismatch,
     #[error("target process executable identity does not match the request")]
     AgentExecutableIdentityMismatch,
-    #[error("configured agent executable is not private and executable")]
-    AgentExecutablePermissions,
-    #[error("configured agent executable owner does not match target uid")]
-    AgentExecutableOwnerMismatch,
-    #[error("configured agent has no launchers")]
-    AgentLaunchersMissing,
+    #[error("configured agent has no executable names")]
+    AgentExecutableNamesMissing,
     #[error("configured agent requires a verified terminal origin")]
     AgentTerminalRequired,
-    #[error("Pi agent target must not claim a terminal origin")]
+    #[error("agent target must not claim an unexpected terminal origin")]
     AgentTerminalUnexpected,
     #[error("agent process does not belong to the claimed terminal session")]
     AgentTerminalSessionMismatch,
@@ -216,7 +208,7 @@ fn read_and_validate_agent_target_process(
         return Err(SessionValidationError::UidMismatch);
     }
     let executable = read_process_executable(&process_dir)?;
-    validate_agent_executable_rule(&executable, claim.executable_rule, claim.target_uid)?;
+    validate_agent_executable_rule(&stat.command_name, claim.executable_rule)?;
     if executable.device != claim.executable_device || executable.inode != claim.executable_inode {
         return Err(SessionValidationError::AgentExecutableIdentityMismatch);
     }
@@ -245,13 +237,11 @@ fn read_and_validate_agent_terminal(
     terminal: Option<&AgentTerminalSession>,
     target_uid: u32,
 ) -> Result<Option<ValidatedTargetProcess>, SessionValidationError> {
-    match (executable_rule, terminal) {
-        (AgentExecutableRule::Pi, None) => Ok(None),
-        (AgentExecutableRule::Pi, Some(_)) => Err(SessionValidationError::AgentTerminalUnexpected),
-        (AgentExecutableRule::Pinned { .. }, None) => {
-            Err(SessionValidationError::AgentTerminalRequired)
-        }
-        (AgentExecutableRule::Pinned { .. }, Some(terminal)) => {
+    match (executable_rule.requires_terminal, terminal) {
+        (false, None) => Ok(None),
+        (false, Some(_)) => Err(SessionValidationError::AgentTerminalUnexpected),
+        (true, None) => Err(SessionValidationError::AgentTerminalRequired),
+        (true, Some(terminal)) => {
             if agent_stat.session_id != terminal.leader_pid
                 || agent_stat.tty_device == 0
                 || agent_stat.tty_device != terminal.tty_device
@@ -327,13 +317,18 @@ fn read_process_stat(process_dir: &Path) -> Result<ProcessStat, SessionValidatio
 }
 
 fn parse_process_stat(stat: &str) -> Result<ProcessStat, SessionValidationError> {
+    let command_start = stat
+        .find('(')
+        .ok_or(SessionValidationError::ProcessUnavailable)?;
     let command_end = stat
         .rfind(") ")
         .ok_or(SessionValidationError::ProcessUnavailable)?;
+    let command_name = stat[command_start + 1..command_end].to_string();
     let fields = stat[command_end + 2..]
         .split_whitespace()
         .collect::<Vec<_>>();
     Ok(ProcessStat {
+        command_name,
         parent_pid: parse_process_stat_field(&fields, PROC_STAT_PARENT_PID_INDEX)?,
         session_id: parse_process_stat_field(&fields, PROC_STAT_SESSION_ID_INDEX)?,
         tty_device: parse_process_stat_field(&fields, PROC_STAT_TTY_DEVICE_INDEX)?,
@@ -410,12 +405,12 @@ fn read_same_uid_agent_parent(
     }
 
     let parent_dir = proc_root.join(parent_pid.to_string());
-    let executable = match read_process_executable(&parent_dir) {
-        Ok(executable) => executable,
+    let parent_stat = match read_process_stat(&parent_dir) {
+        Ok(stat) => stat,
         Err(SessionValidationError::ProcessUnavailable) => return Ok(None),
         Err(error) => return Err(error),
     };
-    match validate_agent_executable_rule(&executable, executable_rule, uid) {
+    match validate_agent_executable_rule(&parent_stat.command_name, executable_rule) {
         Ok(()) => {}
         Err(SessionValidationError::AgentExecutableMismatch) => return Ok(None),
         Err(error) => return Err(error),
@@ -431,88 +426,30 @@ fn read_process_executable(
     process_dir: &Path,
 ) -> Result<ProcessExecutable, SessionValidationError> {
     let exe_link = process_dir.join("exe");
-    let path = fs::read_link(&exe_link).map_err(|_| SessionValidationError::ProcessUnavailable)?;
     let metadata =
         fs::metadata(&exe_link).map_err(|_| SessionValidationError::ProcessUnavailable)?;
     Ok(ProcessExecutable {
-        path,
         device: metadata.dev(),
         inode: metadata.ino(),
-        uid: metadata.uid(),
-        mode: metadata.mode(),
     })
 }
 
 fn validate_agent_executable_rule(
-    executable: &ProcessExecutable,
+    command_name: &str,
     rule: &AgentExecutableRule,
-    target_uid: u32,
 ) -> Result<(), SessionValidationError> {
-    match rule {
-        AgentExecutableRule::Pi => validate_pi_agent_executable(&executable.path),
-        AgentExecutableRule::Pinned { launchers } => {
-            validate_pinned_agent_executable(executable, launchers, target_uid)
-        }
+    if rule.executable_names.is_empty() {
+        return Err(SessionValidationError::AgentExecutableNamesMissing);
     }
-}
-
-fn validate_pi_agent_executable(executable: &Path) -> Result<(), SessionValidationError> {
-    let name = executable.file_name().and_then(|name| name.to_str());
-    if matches!(name, Some("pi" | "pi-dev")) {
+    if rule
+        .executable_names
+        .iter()
+        .any(|executable_name| executable_name == command_name)
+    {
         Ok(())
     } else {
         Err(SessionValidationError::AgentExecutableMismatch)
     }
-}
-
-fn validate_pinned_agent_executable(
-    executable: &ProcessExecutable,
-    launchers: &[PathBuf],
-    target_uid: u32,
-) -> Result<(), SessionValidationError> {
-    if launchers.is_empty() {
-        return Err(SessionValidationError::AgentLaunchersMissing);
-    }
-    if !matches_pinned_agent_launcher(executable, launchers)? {
-        return Err(SessionValidationError::AgentExecutableMismatch);
-    }
-    if executable.uid != target_uid {
-        return Err(SessionValidationError::AgentExecutableOwnerMismatch);
-    }
-    if executable.mode & GROUP_OR_WORLD_WRITE_BITS != 0
-        || executable.mode & EXECUTABLE_PERMISSION_BITS == 0
-    {
-        return Err(SessionValidationError::AgentExecutablePermissions);
-    }
-    Ok(())
-}
-
-fn matches_pinned_agent_launcher(
-    executable: &ProcessExecutable,
-    launchers: &[PathBuf],
-) -> Result<bool, SessionValidationError> {
-    for launcher in launchers {
-        if pinned_launcher_matches(executable, launcher)? {
-            return Ok(true);
-        }
-    }
-    Ok(false)
-}
-
-fn pinned_launcher_matches(
-    executable: &ProcessExecutable,
-    launcher: &Path,
-) -> Result<bool, SessionValidationError> {
-    if !launcher.is_absolute() {
-        return Ok(false);
-    }
-    let resolved =
-        fs::canonicalize(launcher).map_err(|_| SessionValidationError::AgentExecutableMismatch)?;
-    let metadata =
-        fs::metadata(&resolved).map_err(|_| SessionValidationError::AgentExecutableMismatch)?;
-    Ok(resolved == executable.path
-        && metadata.dev() == executable.device
-        && metadata.ino() == executable.inode)
 }
 
 fn read_process_ids(process_dir: &Path) -> Result<(u32, u32), SessionValidationError> {
